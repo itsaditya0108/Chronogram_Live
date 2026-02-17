@@ -1,0 +1,63 @@
+package live.chronogram.auth.util;
+
+import jakarta.persistence.AttributeConverter;
+import jakarta.persistence.Converter;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.SecretKeySpec;
+import java.security.Key;
+import java.util.Base64;
+
+@Component
+@Converter
+public class AttributeEncryptor implements AttributeConverter<String, String> {
+
+    private static final String AES = "AES";
+
+    // Injecting via setter or static field might be tricky in Converter
+    // Standard approach: use a static holder or configuration
+    // For simplicity in this context, we will read a property or default
+    // Ideally this should be injected.
+    // BUT AttributeConverter is instantiated by Hibernate, not Spring, so @Value
+    // doesn't work directly inside it easily without a static accessor.
+
+    private static String SECRET_KEY;
+
+    @Value("${app.security.db-encryption-key}")
+    public void setSecretKey(String secretKey) {
+        AttributeEncryptor.SECRET_KEY = secretKey;
+    }
+
+    @Override
+    public String convertToDatabaseColumn(String attribute) {
+        if (attribute == null)
+            return null;
+        try {
+            Key key = new SecretKeySpec(SECRET_KEY.getBytes(), AES);
+            Cipher cipher = Cipher.getInstance(AES);
+            cipher.init(Cipher.ENCRYPT_MODE, key);
+            return Base64.getEncoder().encodeToString(cipher.doFinal(attribute.getBytes()));
+        } catch (Exception e) {
+            throw new RuntimeException("Error encrypting attribute", e);
+        }
+    }
+
+    @Override
+    public String convertToEntityAttribute(String dbData) {
+        if (dbData == null)
+            return null;
+        try {
+            Key key = new SecretKeySpec(SECRET_KEY.getBytes(), AES);
+            Cipher cipher = Cipher.getInstance(AES);
+            cipher.init(Cipher.DECRYPT_MODE, key);
+            return new String(cipher.doFinal(Base64.getDecoder().decode(dbData)));
+        } catch (Exception e) {
+            // Fallback: If decryption fails, maybe it's plaintext?
+            // Better to fail in strict mode, but for dev we could return dbData.
+            // Let's fail to ensure security.
+            throw new RuntimeException("Error decrypting attribute", e);
+        }
+    }
+}
