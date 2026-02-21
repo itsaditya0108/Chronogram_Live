@@ -14,6 +14,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
+import com.company.image_service.service.EncryptionService;
 import org.springframework.core.io.UrlResource;
 
 import javax.imageio.ImageIO;
@@ -36,6 +37,7 @@ public class ImageServiceImpl implements ImageService {
     private static final Logger logger = LoggerFactory.getLogger(ImageServiceImpl.class);
 
     private final ImageRepository imageRepository;
+    private final EncryptionService encryptionService;
     private final String storageBasePath;
     private final String chatStoragePath;
     private final long maxUploadSize;
@@ -43,11 +45,13 @@ public class ImageServiceImpl implements ImageService {
 
     public ImageServiceImpl(
             ImageRepository imageRepository,
+            EncryptionService encryptionService,
             @Value("${image.storage.base-path:./data/image-service}") String storageBasePath,
             @Value("${image.storage.chat-path:./data/chat-images/storage}") String chatStoragePath,
             @Value("${image.upload.max-size:5242880}") long maxUploadSize,
             @Value("${image.upload.max-count:100}") int maxUploadCount) {
         this.imageRepository = imageRepository;
+        this.encryptionService = encryptionService;
         this.storageBasePath = (storageBasePath == null || storageBasePath.trim().isEmpty()) ? "./data/image-service"
                 : storageBasePath;
         this.chatStoragePath = (chatStoragePath == null || chatStoragePath.trim().isEmpty())
@@ -426,6 +430,59 @@ public class ImageServiceImpl implements ImageService {
             logger.error("DEBUG: Malformed URL for path: {}", fullPath, e);
             throw new RuntimeException("Invalid thumbnail path", e);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // SECURE RAM-VIEWING (DECRYPTED STREAM)
+    // ------------------------------------------------------------------
+
+    @Override
+    public org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody streamDecryptedImage(
+            Long imageId, Long userId, boolean isThumbnail) {
+
+        Image image = imageRepository.findById(imageId)
+                .filter(img -> !img.getIsDeleted())
+                .orElseThrow(() -> new RuntimeException("Image not found"));
+
+        if (!image.getUserId().equals(userId)) {
+            throw new RuntimeException("Access denied");
+        }
+
+        String targetPathStr = isThumbnail ? image.getThumbnailPath() : image.getStoragePath();
+        if (targetPathStr == null) {
+            throw new RuntimeException("Path not defined");
+        }
+
+        Path absolutePath = Paths.get(storageBasePath, targetPathStr);
+        if (!Files.exists(absolutePath)) {
+            // Fallback to chat path if applicable
+            absolutePath = Paths.get(chatStoragePath, targetPathStr);
+            if (!Files.exists(absolutePath)) {
+                throw new RuntimeException("Encrypted image file not found on disk");
+            }
+        }
+
+        final Path finalPath = absolutePath;
+
+        return outputStream -> {
+            try {
+                // Determine if file is encrypted (.enc) based on our merge worker logic
+                if (finalPath.toString().endsWith(".enc") || finalPath.toString().endsWith(".enc.thumb")) {
+                    if (encryptionService != null) {
+                        encryptionService.decryptToStream(finalPath, outputStream);
+                    } else {
+                        throw new RuntimeException("Encryption Service not initialized");
+                    }
+                } else {
+                    // It's a legacy unencrypted file (e.g. from before the vault migration)
+                    Files.copy(finalPath, outputStream);
+                }
+            } catch (Exception e) {
+                logger.error("Error streaming decrypted image", e);
+                // Cannot throw standard exceptions in lambda easily, wrap in IO
+                throw new java.io.IOException("Stream failed", e);
+            }
+        };
     }
 
     private void deleteQuietly(String relativePath) {

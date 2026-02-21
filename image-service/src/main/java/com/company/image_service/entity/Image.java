@@ -60,6 +60,10 @@ public class Image {
     @Column(name = "deleted_timestamp")
     private LocalDateTime deletedTimestamp;
 
+    // 🔥 NEW: HASH FOR DEDUPLICATION
+    @Column(name = "content_hash", length = 255)
+    private String contentHash;
+
     // ---- Lifecycle hooks ----
 
     @PrePersist
@@ -174,5 +178,13 @@ public class Image {
 
     public void setDeletedTimestamp(LocalDateTime deletedTimestamp) {
         this.deletedTimestamp = deletedTimestamp;
+    }
+
+    public String getContentHash() {
+        return contentHash;
+    }
+
+    public void setContentHash(String contentHash) {
+        this.contentHash = contentHash;
     }
 }
