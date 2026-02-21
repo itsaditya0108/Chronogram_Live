@@ -19,7 +19,11 @@ public class DeviceService {
     public UserDevice registerOrUpdateDevice(User user, String deviceId, String simSerial, String pushToken,
             String deviceName, String deviceModel,
             String osName, String osVersion, String appVersion,
-            Double latitude, Double longitude, boolean trustDevice) {
+            Double latitude, Double longitude, String country, String city, boolean trustDevice) {
+
+        if (deviceId == null || deviceId.trim().isEmpty()) {
+            throw new RuntimeException("Device ID is required.");
+        }
 
         Optional<UserDevice> existingDeviceOpt = userDeviceRepository.findByUser_UserIdAndDeviceId(user.getUserId(),
                 deviceId);
@@ -36,6 +40,8 @@ public class DeviceService {
             device.setAppVersion(appVersion);
             device.setLatitude(latitude);
             device.setLongitude(longitude);
+            device.setCountry(country);
+            device.setCity(city);
             // Update Push Token
             if (pushToken != null && !pushToken.isEmpty()) {
                 device.setPushToken(pushToken);
@@ -62,6 +68,8 @@ public class DeviceService {
             device.setLastLoginTimestamp(LocalDateTime.now());
             device.setLatitude(latitude);
             device.setLongitude(longitude);
+            device.setCountry(country);
+            device.setCity(city);
         }
 
         return userDeviceRepository.save(device);

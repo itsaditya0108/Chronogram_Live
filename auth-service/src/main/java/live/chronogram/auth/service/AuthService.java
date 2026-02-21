@@ -45,6 +45,9 @@ public class AuthService {
     private NotificationService notificationService;
 
     @Autowired
+    private live.chronogram.auth.repository.LoginHistoryRepository loginHistoryRepository;
+
+    @Autowired
     private JwtTokenProvider jwtTokenProvider;
 
     @Value("${app.jwt.refresh-token-validity-ms}")
@@ -107,7 +110,7 @@ public class AuthService {
     public String verifyOtpForRegistration(String mobileNumber, String otpCode, String emailOtpCode,
             String deviceId, String simSerial, String pushToken,
             String deviceName, String deviceModel, String osName, String osVersion, String appVersion,
-            Double latitude, Double longitude, String country, String city, String ipAddress) {
+            Double latitude, Double longitude, String country, String city, String ipAddress, String userAgent) {
 
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
         logger.info("Verifying registration OTP for mobile: {}", sanitizedMobile);
@@ -120,14 +123,15 @@ public class AuthService {
         // This will CREATE the user and COMMIT the transaction when it returns.
         // For NEW USER, verifyOtpAndLogin returns a RegistrationToken.
         return verifyOtpAndLogin(sanitizedMobile, otpCode, emailOtpCode, false, deviceId, simSerial, pushToken,
-                deviceName, deviceModel, osName, osVersion, appVersion, latitude, longitude, country, city, ipAddress);
+                deviceName, deviceModel, osName, osVersion, appVersion, latitude, longitude, country, city, ipAddress,
+                userAgent);
     }
 
     @Transactional
     public String verifyOtpForLogin(String mobileNumber, String otpCode, String emailOtpCode, boolean isRecoveryFlow,
             String deviceId, String simSerial, String pushToken,
             String deviceName, String deviceModel, String osName, String osVersion, String appVersion,
-            Double latitude, Double longitude, String country, String city, String ipAddress) {
+            Double latitude, Double longitude, String country, String city, String ipAddress, String userAgent) {
 
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
         logger.info("Verifying login OTP for mobile: {}", sanitizedMobile);
@@ -137,14 +141,15 @@ public class AuthService {
         }
 
         return verifyOtpAndLogin(mobileNumber, otpCode, emailOtpCode, isRecoveryFlow, deviceId, simSerial, pushToken,
-                deviceName, deviceModel, osName, osVersion, appVersion, latitude, longitude, country, city, ipAddress);
+                deviceName, deviceModel, osName, osVersion, appVersion, latitude, longitude, country, city, ipAddress,
+                userAgent);
     }
 
     @Transactional
     public String verifyOtpAndLogin(String mobileNumber, String otpCode, String emailOtpCode, boolean isRecoveryFlow,
             String deviceId, String simSerial, String pushToken,
             String deviceName, String deviceModel, String osName, String osVersion, String appVersion,
-            Double latitude, Double longitude, String country, String city, String ipAddress) {
+            Double latitude, Double longitude, String country, String city, String ipAddress, String userAgent) {
 
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
         logger.debug("Core verifyOtpAndLogin for mobile: {}", sanitizedMobile);
@@ -294,7 +299,7 @@ public class AuthService {
         // Register/Update Device
         UserDevice device = deviceService.registerOrUpdateDevice(user, deviceId, simSerial, pushToken, deviceName,
                 deviceModel,
-                osName, osVersion, appVersion, latitude, longitude, shouldTrustThisDevice);
+                osName, osVersion, appVersion, latitude, longitude, country, city, shouldTrustThisDevice);
 
         // Generate Tokens
         String accessToken = jwtTokenProvider.createAccessToken(user.getUserId(), "USER", device.getUserDeviceId());
@@ -315,6 +320,9 @@ public class AuthService {
         session.setCountry(country);
         session.setCity(city);
         userSessionRepository.save(session);
+
+        // Save Login History
+        saveLoginHistory(user, device, ipAddress, userAgent, true, null, latitude, longitude, city, country);
 
         return accessToken;
     }
@@ -359,7 +367,8 @@ public class AuthService {
     }
 
     @Transactional
-    public String verifyNewDevice(live.chronogram.auth.dto.VerifyNewDeviceRequest request, String ipAddress) {
+    public String verifyNewDevice(live.chronogram.auth.dto.VerifyNewDeviceRequest request, String ipAddress,
+            String userAgent) {
         String sanitizedMobile = sanitizePhoneNumber(request.getMobileNumber());
         logger.info("Verifying new device for mobile: {}", sanitizedMobile);
         // 1. Find User (Look up by mobile first)
@@ -391,6 +400,8 @@ public class AuthService {
                 request.getAppVersion(),
                 request.getLatitude(),
                 request.getLongitude(),
+                request.getCountry(),
+                request.getCity(),
                 true); // IMP: Trust this device
 
         // 4. Create Session & Token (Same logic as login)
@@ -423,6 +434,10 @@ public class AuthService {
                     : "Unknown Location";
             notificationService.sendLoginAlert(td.getPushToken(), request.getDeviceName(), loc);
         }
+
+        // Save Login History
+        saveLoginHistory(user, device, ipAddress, userAgent, true, null, request.getLatitude(), request.getLongitude(),
+                request.getCity(), request.getCountry());
 
         return accessToken;
     }
@@ -471,7 +486,8 @@ public class AuthService {
     }
 
     @Transactional
-    public String completeProfile(live.chronogram.auth.dto.CompleteProfileRequest request, String ipAddress) {
+    public String completeProfile(live.chronogram.auth.dto.CompleteProfileRequest request, String ipAddress,
+            String userAgent) {
         String sanitizedMobile = sanitizePhoneNumber(request.getMobileNumber());
         logger.info("Completing profile for mobile: {}", sanitizedMobile);
         String mobileNumber = sanitizedMobile;
@@ -508,24 +524,46 @@ public class AuthService {
 
         User savedUser = userRepository.save(newUser);
 
+        // Register/Update Device (FIX: Now capturing device info during registration)
+        // Note: For new registration, we treat it as trusted?
+        // Usually yes, if they just verified MOBILE + EMAIL on this device.
+        UserDevice device = deviceService.registerOrUpdateDevice(savedUser,
+                request.getDeviceId(),
+                request.getSimSerial(),
+                request.getPushToken(),
+                request.getDeviceName(),
+                request.getDeviceModel(),
+                request.getOsName(),
+                request.getOsVersion(),
+                request.getAppVersion(),
+                request.getLatitude(),
+                request.getLongitude(),
+                request.getCountry(),
+                request.getCity(),
+                true); // Trusted on first registration
+
         // Generate Tokens
-        String accessToken = jwtTokenProvider.createAccessToken(savedUser.getUserId(), "USER", null);
+        String accessToken = jwtTokenProvider.createAccessToken(savedUser.getUserId(), "USER",
+                device.getUserDeviceId());
         String refreshToken = jwtTokenProvider.createRefreshToken(savedUser.getUserId());
 
         // Create Session
         UserSession session = new UserSession();
         session.setUser(savedUser);
+        session.setUserDevice(device); // Link Session to Device
         session.setRefreshTokenHash(refreshToken);
         session.setExpiresTimestamp(LocalDateTime.now().plusNanos(refreshTokenValidityInMs * 1000000));
         session.setIsRevoked(false);
-        session.setIsRevoked(false);
         session.setIpAddress(ipAddress);
-        session.setLatitude(request.getLatitude());
         session.setLatitude(request.getLatitude());
         session.setLongitude(request.getLongitude());
         session.setCountry(request.getCountry());
         session.setCity(request.getCity());
         userSessionRepository.save(session);
+
+        // Save Login History (First Login)
+        saveLoginHistory(savedUser, device, ipAddress, userAgent, true, null, request.getLatitude(),
+                request.getLongitude(), request.getCity(), request.getCountry());
 
         return accessToken;
     }
@@ -552,6 +590,52 @@ public class AuthService {
         // Generate Next Token (Step: PROFILE_REQUIRED)
         // Store validated email in token so we trust it in next step
         return jwtTokenProvider.createRegistrationToken(mobileNumber, email, "PROFILE_REQUIRED");
+    }
+
+    public live.chronogram.auth.dto.UserResponse getUserDetails(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        return new live.chronogram.auth.dto.UserResponse(
+                user.getUserId(),
+                user.getName(),
+                user.getEmail(),
+                user.getMobileNumber(),
+                user.getDob() != null ? user.getDob().toString() : null,
+                user.getProfilePictureUrl(),
+                user.getMobileVerified(),
+                user.getEmailVerified(),
+                user.getUserStatus() != null ? user.getUserStatus().getName() : "Unknown");
+    }
+
+    private void saveLoginHistory(User user, UserDevice device, String ipAddress, String userAgent, boolean success,
+            String failureReason, Double latitude, Double longitude, String city, String country) {
+        try {
+            live.chronogram.auth.model.LoginHistory history = new live.chronogram.auth.model.LoginHistory();
+            history.setUserId(user.getUserId());
+            history.setIpAddress(ipAddress);
+            history.setUserAgent(userAgent);
+            history.setSuccess(success);
+            history.setFailureReason(failureReason);
+            history.setCreatedTimestamp(LocalDateTime.now());
+
+            if (device != null) {
+                history.setDeviceModel(device.getDeviceModel());
+                // history.setDeviceType(device.getDeviceType()); // If available
+                history.setOs(device.getOsName() + " " + device.getOsVersion());
+                history.setBrowser(null); // App doesn't usually send browser info unless parsed from UA
+            }
+
+            history.setLatitude(latitude);
+            history.setLongitude(longitude);
+            history.setCity(city);
+            history.setCountry(country);
+
+            loginHistoryRepository.save(history);
+        } catch (Exception e) {
+            logger.error("Failed to save login history: {}", e.getMessage());
+            // Don't block login if history fails
+        }
     }
 
     private String sanitizePhoneNumber(String mobileNumber) {

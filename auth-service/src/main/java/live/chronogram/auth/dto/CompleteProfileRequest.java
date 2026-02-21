@@ -10,6 +10,16 @@ public class CompleteProfileRequest {
     private Double latitude;
     private Double longitude;
 
+    // Device Info
+    private String deviceId;
+    private String deviceName;
+    private String deviceModel;
+    private String osName;
+    private String osVersion;
+    private String appVersion;
+    private String simSerial;
+    private String pushToken;
+
     public String getMobileNumber() {
         return mobileNumber;
     }
@@ -72,5 +82,69 @@ public class CompleteProfileRequest {
 
     public void setLongitude(Double longitude) {
         this.longitude = longitude;
+    }
+
+    public String getDeviceId() {
+        return deviceId;
+    }
+
+    public void setDeviceId(String deviceId) {
+        this.deviceId = deviceId;
+    }
+
+    public String getDeviceName() {
+        return deviceName;
+    }
+
+    public void setDeviceName(String deviceName) {
+        this.deviceName = deviceName;
+    }
+
+    public String getDeviceModel() {
+        return deviceModel;
+    }
+
+    public void setDeviceModel(String deviceModel) {
+        this.deviceModel = deviceModel;
+    }
+
+    public String getOsName() {
+        return osName;
+    }
+
+    public void setOsName(String osName) {
+        this.osName = osName;
+    }
+
+    public String getOsVersion() {
+        return osVersion;
+    }
+
+    public void setOsVersion(String osVersion) {
+        this.osVersion = osVersion;
+    }
+
+    public String getAppVersion() {
+        return appVersion;
+    }
+
+    public void setAppVersion(String appVersion) {
+        this.appVersion = appVersion;
+    }
+
+    public String getSimSerial() {
+        return simSerial;
+    }
+
+    public void setSimSerial(String simSerial) {
+        this.simSerial = simSerial;
+    }
+
+    public String getPushToken() {
+        return pushToken;
+    }
+
+    public void setPushToken(String pushToken) {
+        this.pushToken = pushToken;
     }
 }

@@ -34,13 +34,28 @@ This serves as a fallback for location data if latitude/longitude are not provid
 
 ---
 
+## 📱 Device ID Requirement (Crucial)
+**ALL** requests involving login, registration, or OTP verification **MUST** include a `deviceId`.
+*   If `deviceId` is missing, the API will return `400 Bad Request` with message: `Device ID is required.`
+*   Generate a unique UUID for `deviceId` on the client side and persist it.
+
+---
+
+## 📱 Device ID Requirement (Crucial)
+**ALL** requests involving login, registration, or OTP verification **MUST** include a `deviceId`.
+*   If `deviceId` is missing, the API will return `400 Bad Request` with message: `Device ID is required.`
+*   Generate a unique UUID for `deviceId` on the client side and persist it.
+
+---
+
 ## 1️⃣ Registration Flow (New User - Stateless)
 
 ### Step 1: Send Mobile OTP
 **POST** `/auth/send-otp`
 ```json
 {
-    "mobileNumber": "9876543210"
+    "mobileNumber": "9876543210",
+    "deviceId": "DEVICE_ID_1"
 }
 ```
 
@@ -97,7 +112,14 @@ This serves as a fallback for location data if latitude/longitude are not provid
 {
     "name": "John Doe",
     "dob": "1990-01-01",
+    "mobileNumber" : "9876543210",
     "registrationToken": "<PASTE_REGISTRATION_TOKEN_STEP_2>",
+    "deviceId": "DEVICE_ID_1",
+    "deviceName": "Postman",
+    "deviceModel": "Virtual",
+    "osName": "Windows",
+    "osVersion": "10",
+    "appVersion": "1.0",
     "latitude": 28.6139,
     "longitude": 77.2090,
     "country": "India",
@@ -116,7 +138,8 @@ This serves as a fallback for location data if latitude/longitude are not provid
 **POST** `/auth/send-otp`
 ```json
 {
-    "mobileNumber": "9876543210"
+    "mobileNumber": "9876543210",
+    "deviceId": "DEVICE_ID_1"
 }
 ```
 
@@ -144,7 +167,8 @@ This serves as a fallback for location data if latitude/longitude are not provid
 **POST** `/auth/send-otp`
 ```json
 {
-    "mobileNumber": "9876543210"
+    "mobileNumber": "9876543210",
+    "deviceId": "DEVICE_ID_NEW_99"
 }
 ```
 
@@ -194,6 +218,55 @@ This serves as a fallback for location data if latitude/longitude are not provid
 **Response:** `200 OK`
 *   **Body:** `{"accessToken": "eyJ...", "message": "New device verified and logged in."}`
 *   **Success:** Device is now trusted and user is logged in.
+
+## 🔄 Resend OTP API
+
+This endpoint allows you to resend an OTP for either mobile number or email address, depending on the payload.
+
+### Resend Mobile OTP
+**POST** `/auth/resend-otp`
+```json
+{
+    "mobileNumber": "9876543210"
+}
+```
+**Response:** `200 OK` ("Mobile OTP resent successfully.")
+
+### Resend Email OTP
+**POST** `/auth/resend-otp`
+```json
+{
+    "email": "user@example.com",
+    "registrationToken": "<OPTIONAL_REGISTRATION_TOKEN_IF_IN_REGISTRATION_FLOW>"
+}
+```
+**Response:** `200 OK` ("Email OTP resent successfully.")
+
+---
+
+## 4️⃣ User Details API (Secure)
+
+### Get Current User Profile
+**GET** `/auth/me`
+*   **Headers:**
+    *   `Authorization`: `Bearer <YOUR_ACCESS_TOKEN>`
+
+**Response:** `200 OK`
+```json
+{
+    "userId": 123,
+    "name": "John Doe",
+    "email": "user@example.com",
+    "mobileNumber": "+919876543210",
+    "dob": "1990-01-01",
+    "profilePictureUrl": "https://api.dicebear.com/...",
+    "mobileVerified": true,
+    "emailVerified": true,
+    "status": "Active"
+}
+```
+
+**Note:** This endpoint requires a valid JWT token in the header.
 
 ---
 

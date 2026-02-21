@@ -32,188 +32,169 @@ public class AuthController {
 
     @PostMapping("/send-otp")
     public ResponseEntity<?> sendOtp(@RequestBody OtpRequest request) {
-        try {
-            if (request.getMobileNumber() == null || request.getMobileNumber().isEmpty()) {
-                return ResponseEntity.badRequest().body("Mobile number is required");
-            }
-            authService.sendOtp(request.getMobileNumber());
-            logger.info("OTP sent to mobile: {}", request.getMobileNumber());
-            return ResponseEntity.ok("OTP sent successfully.");
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+        if (request.getMobileNumber() == null || request.getMobileNumber().isEmpty()) {
+            throw new RuntimeException("Mobile number is required");
         }
+        authService.sendOtp(request.getMobileNumber());
+        logger.info("OTP sent to mobile: {}", request.getMobileNumber());
+        return ResponseEntity.ok("OTP sent successfully.");
     }
 
     @PostMapping("/send-email-otp")
     public ResponseEntity<?> sendEmailOtp(@RequestBody OtpRequest request) {
-        try {
+        if (request.getRegistrationToken() != null && !request.getRegistrationToken().isEmpty()) {
+            if (request.getEmail() == null || request.getEmail().isEmpty()) {
+                throw new RuntimeException("Email is required for registration.");
+            }
+            authService.sendEmailOtp(request.getEmail(), request.getRegistrationToken());
+        } else {
+            if (request.getMobileNumber() == null || request.getMobileNumber().isEmpty()) {
+                throw new RuntimeException("Mobile number is required");
+            }
+            authService.sendEmailOtp(request.getMobileNumber());
+        }
+        logger.info("Email OTP sent to: {}",
+                (request.getEmail() != null ? request.getEmail() : request.getMobileNumber()));
+        return ResponseEntity.ok("Email OTP sent successfully.");
+    }
+
+    @PostMapping("/resend-otp")
+    public ResponseEntity<?> resendOtp(@RequestBody OtpRequest request) {
+        if (request.getEmail() != null && !request.getEmail().trim().isEmpty()) {
             if (request.getRegistrationToken() != null && !request.getRegistrationToken().isEmpty()) {
-                if (request.getEmail() == null || request.getEmail().isEmpty()) {
-                    return ResponseEntity.badRequest().body("Email is required for registration.");
-                }
                 authService.sendEmailOtp(request.getEmail(), request.getRegistrationToken());
             } else {
-                if (request.getMobileNumber() == null || request.getMobileNumber().isEmpty()) {
-                    return ResponseEntity.badRequest().body("Mobile number is required");
-                }
-                authService.sendEmailOtp(request.getMobileNumber());
+                authService.sendEmailOtp(request.getEmail());
             }
-            logger.info("Email OTP sent to: {}",
-                    (request.getEmail() != null ? request.getEmail() : request.getMobileNumber()));
-            return ResponseEntity.ok("Email OTP sent successfully.");
-        } catch (
-
-        Exception e) {
-            return ResponseEntity.badRequest().body(e.getMessage());
+            logger.info("Email OTP resent to: {}", request.getEmail());
+            return ResponseEntity.ok("Email OTP resent successfully.");
+        } else if (request.getMobileNumber() != null && !request.getMobileNumber().trim().isEmpty()) {
+            authService.sendOtp(request.getMobileNumber());
+            logger.info("Mobile OTP resent to: {}", request.getMobileNumber());
+            return ResponseEntity.ok("Mobile OTP resent successfully.");
+        } else {
+            throw new RuntimeException("Either email or mobileNumber is required for resend-otp");
         }
     }
 
     @PostMapping("/verify-email-registration-otp")
     public ResponseEntity<?> verifyEmailRegistrationOtp(
             @RequestBody live.chronogram.auth.dto.VerifyEmailRegistrationRequest request) {
-        try {
-            String nextToken = authService.verifyEmailOtpForRegistration(request.getEmail(), request.getOtpCode(),
-                    request.getRegistrationToken());
-            return ResponseEntity.ok(
-                    new TokenResponse(nextToken, null, "Email verified. Complete profile to finalize registration."));
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Email verification failed: " + e.getMessage());
-        }
+        String nextToken = authService.verifyEmailOtpForRegistration(request.getEmail(), request.getOtpCode(),
+                request.getRegistrationToken());
+        return ResponseEntity.ok(
+                new TokenResponse(nextToken, null, "Email verified. Complete profile to finalize registration."));
     }
 
     @PostMapping("/verify-otp")
     public ResponseEntity<?> verifyRegistrationOtp(@RequestBody LoginRequest loginRequest, HttpServletRequest request) {
-        try {
-            String accessToken = authService.verifyOtpForRegistration(
-                    loginRequest.getMobileNumber(),
-                    loginRequest.getOtpCode(),
-                    loginRequest.getEmailOtpCode(),
-                    loginRequest.getDeviceId(),
-                    loginRequest.getSimSerial(),
-                    loginRequest.getPushToken(),
-                    loginRequest.getDeviceName(),
-                    loginRequest.getDeviceModel(),
-                    loginRequest.getOsName(),
-                    loginRequest.getOsVersion(),
-                    loginRequest.getAppVersion(),
-                    loginRequest.getLatitude(),
-                    loginRequest.getLongitude(),
-                    loginRequest.getCountry(),
-                    loginRequest.getCity(),
-                    getClientIp(request));
+        String accessToken = authService.verifyOtpForRegistration(
+                loginRequest.getMobileNumber(),
+                loginRequest.getOtpCode(),
+                loginRequest.getEmailOtpCode(),
+                loginRequest.getDeviceId(),
+                loginRequest.getSimSerial(),
+                loginRequest.getPushToken(),
+                loginRequest.getDeviceName(),
+                loginRequest.getDeviceModel(),
+                loginRequest.getOsName(),
+                loginRequest.getOsVersion(),
+                loginRequest.getAppVersion(),
+                loginRequest.getLatitude(),
+                loginRequest.getLongitude(),
+                loginRequest.getCountry(),
+                loginRequest.getCity(),
+                getClientIp(request),
+                request.getHeader("User-Agent"));
 
-            return ResponseEntity.ok(
-                    new TokenResponse(accessToken, null, "Mobile verified. Verify Email to proceed."));
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Registration failed: " + e.getMessage());
-        }
+        return ResponseEntity.ok(
+                new TokenResponse(accessToken, null, "Mobile verified. Verify Email to proceed."));
     }
 
     @PostMapping("/verify-login-otp")
     public ResponseEntity<?> verifyLoginOtp(@RequestBody LoginRequest loginRequest, HttpServletRequest request) {
-        try {
-            String accessToken = authService.verifyOtpForLogin(
-                    loginRequest.getMobileNumber(),
-                    loginRequest.getOtpCode(),
-                    loginRequest.getEmailOtpCode(),
-                    loginRequest.isRecoveryFlow(),
-                    loginRequest.getDeviceId(),
-                    loginRequest.getSimSerial(),
-                    loginRequest.getPushToken(),
-                    loginRequest.getDeviceName(),
-                    loginRequest.getDeviceModel(),
-                    loginRequest.getOsName(),
-                    loginRequest.getOsVersion(),
-                    loginRequest.getAppVersion(),
-                    loginRequest.getLatitude(),
-                    loginRequest.getLongitude(),
-                    loginRequest.getCountry(),
-                    loginRequest.getCity(),
-                    getClientIp(request));
-
-            return ResponseEntity.ok(new TokenResponse(accessToken, "SAMPLE_REFRESH_TOKEN", "Login successful."));
-        } catch (Exception e) {
-            // Check for specific exceptions to return cleaner errors?
-            return ResponseEntity.badRequest().body("Login failed: " + e.getMessage());
-        }
+        String accessToken = authService.verifyOtpForLogin(
+                loginRequest.getMobileNumber(),
+                loginRequest.getOtpCode(),
+                loginRequest.getEmailOtpCode(),
+                loginRequest.isRecoveryFlow(),
+                loginRequest.getDeviceId(),
+                loginRequest.getSimSerial(),
+                loginRequest.getPushToken(),
+                loginRequest.getDeviceName(),
+                loginRequest.getDeviceModel(),
+                loginRequest.getOsName(),
+                loginRequest.getOsVersion(),
+                loginRequest.getAppVersion(),
+                loginRequest.getLatitude(),
+                loginRequest.getLongitude(),
+                loginRequest.getCountry(),
+                loginRequest.getCity(),
+                getClientIp(request),
+                request.getHeader("User-Agent"));
+        return ResponseEntity.ok(new TokenResponse(accessToken, "SAMPLE_REFRESH_TOKEN", "Login successful."));
     }
 
     @PostMapping("/refresh-token")
     public ResponseEntity<?> refreshToken(@RequestParam String refreshToken) {
-        try {
-            String newAccessToken = authService.refreshToken(refreshToken);
-            return ResponseEntity.ok(new TokenResponse(newAccessToken, refreshToken, "Token refreshed successfully.")); // Return
-                                                                                                                        // same
-                                                                                                                        // refresh
-                                                                                                                        // token
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Refresh failed: " + e.getMessage());
-        }
+        String newAccessToken = authService.refreshToken(refreshToken);
+        return ResponseEntity.ok(new TokenResponse(newAccessToken, refreshToken, "Token refreshed successfully.")); // Return
+                                                                                                                    // same
+                                                                                                                    // refresh
+                                                                                                                    // token
     }
 
     @PostMapping("/logout")
     public ResponseEntity<?> logout(@RequestParam String refreshToken) {
-        try {
-            authService.logout(refreshToken);
-            return ResponseEntity.ok("Logged out successfully");
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Logout failed: " + e.getMessage());
-        }
+        authService.logout(refreshToken);
+        return ResponseEntity.ok("Logged out successfully");
     }
 
     @PostMapping("/verify-new-device")
     public ResponseEntity<?> verifyNewDevice(@RequestBody live.chronogram.auth.dto.VerifyNewDeviceRequest request,
             HttpServletRequest servletRequest) {
-        try {
-            String accessToken = authService.verifyNewDevice(request, getClientIp(servletRequest));
-            return ResponseEntity
-                    .ok(new TokenResponse(accessToken, "SAMPLE_REFRESH_TOKEN", "New device verified and logged in."));
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Device verification failed: " + e.getMessage());
-        }
+        String accessToken = authService.verifyNewDevice(request, getClientIp(servletRequest),
+                servletRequest.getHeader("User-Agent"));
+        return ResponseEntity
+                .ok(new TokenResponse(accessToken, "SAMPLE_REFRESH_TOKEN", "New device verified and logged in."));
     }
 
     @PostMapping("/link-email")
     public ResponseEntity<?> linkEmail(@RequestBody live.chronogram.auth.dto.LinkEmailRequest request) {
-        try {
-            authService.linkEmail(request);
-            authService.linkEmail(request);
-            logger.info("Link Email OTP sent to: {}", request.getEmail());
-            return ResponseEntity.ok("OTP sent to email.");
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Link email failed: " + e.getMessage());
-        }
+        authService.linkEmail(request);
+        logger.info("Link Email OTP sent to: {}", request.getEmail());
+        return ResponseEntity.ok("OTP sent to email.");
     }
 
     @PostMapping("/verify-email-link")
     public ResponseEntity<?> verifyEmailLink(@RequestBody live.chronogram.auth.dto.VerifyEmailRequest request) {
-        try {
-            String nextToken = authService.verifyLinkEmail(request);
-            return ResponseEntity.ok(new TokenResponse(nextToken, null, "Email linked. Complete profile to proceed.")); // Return
-                                                                                                                        // token
-                                                                                                                        // as
-                                                                                                                        // "accessToken"
-                                                                                                                        // in
-                                                                                                                        // response,
-            // or just raw string?
-            // User expects standard format? Or just simple Map?
-            // TokenResponse(accessToken, refreshToken). Here we only have Registration
-            // Token.
-            // Let's reuse TokenResponse with null refresh token.
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Email verification failed: " + e.getMessage());
-        }
+        String nextToken = authService.verifyLinkEmail(request);
+        return ResponseEntity.ok(new TokenResponse(nextToken, null, "Email linked. Complete profile to proceed.")); // Return
+        // token
+        // as
+        // "accessToken"
+        // in
+        // response,
+        // or just raw string?
+        // User expects standard format? Or just simple Map?
+        // TokenResponse(accessToken, refreshToken). Here we only have Registration
+        // Token.
+        // Let's reuse TokenResponse with null refresh token.
     }
 
     @PostMapping("/complete-profile")
     public ResponseEntity<?> completeProfile(@RequestBody live.chronogram.auth.dto.CompleteProfileRequest request,
             HttpServletRequest servletRequest) {
-        try {
-            String accessToken = authService.completeProfile(request, getClientIp(servletRequest));
-            return ResponseEntity
-                    .ok(new TokenResponse(accessToken, "SAMPLE_REFRESH_TOKEN", "Registration complete. Welcome!"));
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body("Profile update failed: " + e.getMessage());
-        }
+        String accessToken = authService.completeProfile(request, getClientIp(servletRequest),
+                servletRequest.getHeader("User-Agent"));
+        return ResponseEntity
+                .ok(new TokenResponse(accessToken, "SAMPLE_REFRESH_TOKEN", "Registration complete. Welcome!"));
+    }
+
+    @GetMapping("/me")
+    public ResponseEntity<?> getCurrentUser(org.springframework.security.core.Authentication authentication) {
+        Long userId = Long.parseLong(authentication.getName());
+        live.chronogram.auth.dto.UserResponse userResponse = authService.getUserDetails(userId);
+        return ResponseEntity.ok(userResponse);
     }
 }

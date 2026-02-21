@@ -7,10 +7,15 @@ import org.springframework.security.config.annotation.web.configuration.EnableWe
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
+
+    @Autowired
+    private JwtAuthenticationFilter jwtAuthenticationFilter;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -19,14 +24,10 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .anyRequest().permitAll()); // DEBUG: Allow everything
-
-        // Debug Filter
-        http.addFilterBefore((request, response, chain) -> {
-            jakarta.servlet.http.HttpServletRequest req = (jakarta.servlet.http.HttpServletRequest) request;
-            System.out.println("DTO DEBUG FILTER: Incoming Request -> " + req.getMethod() + " " + req.getRequestURI());
-            chain.doFilter(request, response);
-        }, org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class);
+                        .requestMatchers("/api/auth/me").authenticated() // Secure this endpoint
+                        .requestMatchers("/api/auth/**").permitAll() // Allow other auth endpoints (login/register)
+                        .anyRequest().permitAll()) // Default permit all for dev, adjust for prod
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }

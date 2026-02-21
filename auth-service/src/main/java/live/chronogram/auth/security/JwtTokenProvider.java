@@ -61,6 +61,16 @@ public class JwtTokenProvider {
         return Long.parseLong(claims.getSubject());
     }
 
+    public String getRoleFromToken(String token) {
+        Claims claims = Jwts.parser()
+                .verifyWith((javax.crypto.SecretKey) getSignInKey())
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+
+        return (String) claims.get("role");
+    }
+
     public boolean validateToken(String authToken) {
         try {
             Jwts.parser()

@@ -59,6 +59,12 @@ public class UserDevice {
     @Column(name = "longitude")
     private Double longitude;
 
+    @Column(name = "country", length = 100)
+    private String country;
+
+    @Column(name = "city", length = 100)
+    private String city;
+
     public UserDevice() {
     }
 
@@ -182,5 +188,21 @@ public class UserDevice {
 
     public void setLongitude(Double longitude) {
         this.longitude = longitude;
+    }
+
+    public String getCountry() {
+        return country;
+    }
+
+    public void setCountry(String country) {
+        this.country = country;
+    }
+
+    public String getCity() {
+        return city;
+    }
+
+    public void setCity(String city) {
+        this.city = city;
     }
 }
