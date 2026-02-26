@@ -4,7 +4,6 @@ import jakarta.persistence.*;
 
 import java.time.LocalDateTime;
 
-
 @Entity
 @Table(name = "video_upload_sessions")
 public class VideoUploadSession {
@@ -57,7 +56,7 @@ public class VideoUploadSession {
     @Column(name = "merged_file_size")
     private Long mergedFileSize;
 
-    @Column(name="merge_job_uid", length=64)
+    @Column(name = "merge_job_uid", length = 64)
     private String mergeJobUid;
 
     @Column(name = "error_code", length = 100)
@@ -78,7 +77,8 @@ public class VideoUploadSession {
     @Column(name = "merged_timestamp")
     private LocalDateTime mergedTimestamp;
 
-
+    @Column(name = "encrypted_file_hash", length = 64)
+    private String encryptedFileHash;
 
     public VideoUploadSession() {
     }
@@ -279,5 +279,13 @@ public class VideoUploadSession {
 
     public void setMergedTimestamp(LocalDateTime mergedTimestamp) {
         this.mergedTimestamp = mergedTimestamp;
+    }
+
+    public String getEncryptedFileHash() {
+        return encryptedFileHash;
+    }
+
+    public void setEncryptedFileHash(String encryptedFileHash) {
+        this.encryptedFileHash = encryptedFileHash;
     }
 }

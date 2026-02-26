@@ -19,6 +19,9 @@ public class VideoUploadInitRequest {
     private Integer height;
     private Integer totalChunks;
 
+    @NotBlank
+    private String encryptedFileHash;
+
     public VideoUploadInitRequest() {
     }
 
@@ -76,5 +79,13 @@ public class VideoUploadInitRequest {
 
     public void setHeight(Integer height) {
         this.height = height;
+    }
+
+    public String getEncryptedFileHash() {
+        return encryptedFileHash;
+    }
+
+    public void setEncryptedFileHash(String encryptedFileHash) {
+        this.encryptedFileHash = encryptedFileHash;
     }
 }

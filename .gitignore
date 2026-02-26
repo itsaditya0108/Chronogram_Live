@@ -1,0 +1,7 @@
+# Global Git Ignore for Capri_Nexo Microservices
+
+# Ignore ALL environment and application properties to prevent credentials from being pushed to GitHub
+**/application.properties
+**/application.yml
+**/.env
+**/.env.*

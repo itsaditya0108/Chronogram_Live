@@ -61,7 +61,14 @@ public class VideoUploadServiceImpl implements VideoUploadService { // Implement
         // Define max file size (e.g., 500MB)
         long maxSize = 500L * 1024 * 1024;
         if (request.getFileSize() > maxSize) {
-            throw new RuntimeException("FILE_TOO_LARGE"); // Error if file exceeds max size
+            throw new RuntimeException("FILE_TOO_LARGE"); // Strict 500MB limit per BRD
+        }
+
+        // Daily upload quota (max 10 videos per day)
+        java.time.LocalDateTime startOfDay = java.time.LocalDateTime.now().toLocalDate().atStartOfDay();
+        long uploadsToday = videoRepository.countByUserIdAndCreatedTimestampAfter(userId, startOfDay);
+        if (uploadsToday >= 10) {
+            throw new RuntimeException("DAILY_UPLOAD_QUOTA_EXCEEDED");
         }
 
         // Define chunk size (fixed to 5MB for now)
@@ -70,9 +77,10 @@ public class VideoUploadServiceImpl implements VideoUploadService { // Implement
         // Calculate total chunks required based on file size
         int totalChunks = (int) Math.ceil((double) request.getFileSize() / (double) chunkSize);
 
-        // 1. Check if video already exists in final gallery for this user
-        if (videoRepository.existsByUserIdAndTitleAndOriginalFileSizeAndIsDeletedFalse(userId, request.getFileName(),
-                request.getFileSize())) {
+        // 1. Check if video already exists in final gallery for this user using
+        // encryptedFileHash
+        if (videoRepository.existsByUserIdAndEncryptedFileHashAndIsDeletedFalse(userId,
+                request.getEncryptedFileHash())) {
             // If duplicate found, throw exception
             throw new RuntimeException("VIDEO_ALREADY_EXISTS");
         }
@@ -120,6 +128,7 @@ public class VideoUploadServiceImpl implements VideoUploadService { // Implement
         session.setUploadedChunksCount(0); // Initialize uploaded count to 0
         session.setStatus(UploadSessionStatus.INITIATED); // Set status to INITIATED
         session.setExpiresTimestamp(expires); // Set expiry
+        session.setEncryptedFileHash(request.getEncryptedFileHash()); // Store client's encrypted hash
 
         sessionRepository.save(session); // Save session to DB
 

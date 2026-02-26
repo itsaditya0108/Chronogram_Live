@@ -68,6 +68,7 @@ public class VideoSecurityConfig { // Security configuration for production envi
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/actuator/**").permitAll() // Allow public access to actuator endpoints
                                                                      // (monitoring)
+                        .requestMatchers("/internal/**").permitAll()
                         .requestMatchers("/api/**").authenticated() // Require authentication for API endpoints
                         .anyRequest().permitAll()) // Allow all other requests (adjust as needed)
                 .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class); // Add JWT filter before the

@@ -58,6 +58,9 @@ public class Video {
     @Column(name = "updated_timestamp", nullable = false)
     private LocalDateTime updatedTimestamp;
 
+    @Column(name = "encrypted_file_hash", length = 64)
+    private String encryptedFileHash;
+
     @Column(name = "thumbnail_file_path", length = 500)
     private String thumbnailFilePath;
 
@@ -218,6 +221,14 @@ public class Video {
 
     public void setUpdatedTimestamp(LocalDateTime updatedTimestamp) {
         this.updatedTimestamp = updatedTimestamp;
+    }
+
+    public String getEncryptedFileHash() {
+        return encryptedFileHash;
+    }
+
+    public void setEncryptedFileHash(String encryptedFileHash) {
+        this.encryptedFileHash = encryptedFileHash;
     }
 
     public String getThumbnailFilePath() {

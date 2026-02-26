@@ -21,4 +21,8 @@ public interface VideoUploadSessionRepository extends JpaRepository<VideoUploadS
     java.util.Optional<VideoUploadSession> findFirstByUserIdAndOriginalFileNameAndOriginalFileSizeAndStatusInOrderByCreatedTimestampDesc(
             Long userId, String originalFileName, Long originalFileSize,
             java.util.List<com.company.video_service.entity.UploadSessionStatus> statuses);
+
+    java.util.List<VideoUploadSession> findAllByStatusInAndExpiresTimestampBefore(
+            java.util.List<com.company.video_service.entity.UploadSessionStatus> statuses,
+            java.time.LocalDateTime timestamp);
 }

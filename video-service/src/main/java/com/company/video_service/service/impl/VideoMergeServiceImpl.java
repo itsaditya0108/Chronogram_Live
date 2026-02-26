@@ -7,7 +7,6 @@ import com.company.video_service.entity.VideoProcessingJobStatus; // Job status 
 import com.company.video_service.entity.VideoStatus; // Video status enum
 import com.company.video_service.entity.VideoUploadSession; // Session entity
 import com.company.video_service.repository.*; // Import all repositories
-import com.company.video_service.service.VideoThumbnailService; // Thumbnail service interface
 import com.company.video_service.service.VideoMergeService; // Merge service interface
 import org.springframework.beans.factory.annotation.Value; // Value annotation
 import org.springframework.stereotype.Service; // Service annotation
@@ -23,8 +22,6 @@ public class VideoMergeServiceImpl implements VideoMergeService { // Implementat
     private final VideoUploadChunkRepository chunkRepository; // Repo for chunks
     private final VideoRepository videoRepository; // Repo for videos
     private final VideoProcessingJobRepository processingJobRepository; // Repo for jobs
-    private final VideoThumbnailRepository thumbnailRepository; // Repo for thumbnails
-    private final VideoThumbnailService thumbnailService; // Service for thumbnail generation
 
     @Value("${video.storage.temp-path}") // Inject temp path from properties
     private String tempStoragePath;
@@ -36,15 +33,11 @@ public class VideoMergeServiceImpl implements VideoMergeService { // Implementat
     public VideoMergeServiceImpl(VideoUploadSessionRepository sessionRepository,
             VideoUploadChunkRepository chunkRepository,
             VideoRepository videoRepository,
-            VideoThumbnailService thumbnailService,
-            VideoProcessingJobRepository processingJobRepository,
-            VideoThumbnailRepository thumbnailRepository) {
+            VideoProcessingJobRepository processingJobRepository) {
         this.sessionRepository = sessionRepository;
         this.chunkRepository = chunkRepository;
         this.videoRepository = videoRepository;
         this.processingJobRepository = processingJobRepository;
-        this.thumbnailRepository = thumbnailRepository;
-        this.thumbnailService = thumbnailService;
     }
 
     @Override
@@ -132,17 +125,37 @@ public class VideoMergeServiceImpl implements VideoMergeService { // Implementat
                 throw new RuntimeException("MERGE_FAILED: " + e.getMessage(), e);
             }
 
-            // validate merged size against original expected size
-            if (finalVideoFile.length() != session.getOriginalFileSize()) {
-                System.out.println("DEBUG: Size mismatch. Expected=" + session.getOriginalFileSize() + " Actual="
-                        + finalVideoFile.length());
+            // validate merged size against original expected size and strict 500MB limit
+            long maxSize = 500L * 1024 * 1024;
+            if (finalVideoFile.length() != session.getOriginalFileSize() || finalVideoFile.length() > maxSize) {
+                System.out.println(
+                        "DEBUG: Size mismatch or exceeds limit. Expected=" + session.getOriginalFileSize() + " Actual="
+                                + finalVideoFile.length());
                 session.setStatus(UploadSessionStatus.FAILED);
                 session.setErrorCode("MERGED_FILE_SIZE_MISMATCH");
                 session.setErrorMessage(
                         "Expected=" + session.getOriginalFileSize() + " actual=" + finalVideoFile.length());
                 session.setUpdatedTimestamp(LocalDateTime.now());
                 sessionRepository.save(session);
-                throw new RuntimeException("MERGED_FILE_SIZE_MISMATCH");
+                throw new RuntimeException("MERGED_FILE_SIZE_MISMATCH_OR_EXCEEDS_LIMIT");
+            }
+
+            // validate encrypted file hash
+            try {
+                String computedHash = com.company.video_service.util.HashUtil
+                        .sha256Hex(java.nio.file.Files.readAllBytes(finalVideoFile.toPath()));
+                if (!computedHash.equalsIgnoreCase(session.getEncryptedFileHash())) {
+                    System.out.println("DEBUG: Hash mismatch. Expected=" + session.getEncryptedFileHash() + " Actual="
+                            + computedHash);
+                    session.setStatus(UploadSessionStatus.FAILED);
+                    session.setErrorCode("ENCRYPTED_FILE_HASH_MISMATCH");
+                    session.setErrorMessage("Hash mismatch during verification.");
+                    session.setUpdatedTimestamp(LocalDateTime.now());
+                    sessionRepository.save(session);
+                    throw new RuntimeException("ENCRYPTED_FILE_HASH_MISMATCH");
+                }
+            } catch (Exception e) {
+                throw new RuntimeException("FAILED_TO_VERIFY_FILE_HASH", e);
             }
 
             // update upload session with final file path
@@ -175,54 +188,6 @@ public class VideoMergeServiceImpl implements VideoMergeService { // Implementat
             // update job with videoUid
             job.setVideoUid(videoUid);
             processingJobRepository.save(job);
-
-            // generate thumbnail
-            File thumbnailFile = new File(outputDir, "thumbnail.jpg");
-            System.out.println("DEBUG: Generating thumbnail to " + thumbnailFile.getAbsolutePath());
-
-            try {
-                if (thumbnailService == null) {
-                    throw new RuntimeException("ThumbnailService is null!");
-                }
-                // Call thumbnail service to generate image
-                thumbnailService.generateThumbnail(finalVideoFile, thumbnailFile);
-                System.out.println("DEBUG: Thumbnail generation process completed.");
-
-                if (!thumbnailFile.exists() || thumbnailFile.length() == 0) {
-                    throw new RuntimeException("Thumbnail file not created or empty.");
-                }
-
-                // Update video with thumbnail path
-                String derivedThumbPath = toRelativePath(thumbnailFile.getAbsolutePath());
-                video.setThumbnailFilePath(derivedThumbPath);
-                video.setThumbnailStatus("READY");
-                video.setThumbnailGeneratedTimestamp(LocalDateTime.now());
-                video.setUpdatedTimestamp(LocalDateTime.now());
-                videoRepository.save(video);
-
-                // Save to VideoThumbnail entity for gallery/previews
-                com.company.video_service.entity.VideoThumbnail vt = new com.company.video_service.entity.VideoThumbnail();
-                vt.setVideoUid(videoUid);
-                vt.setThumbnailUid(UUID.randomUUID().toString());
-                vt.setThumbnailPath(derivedThumbPath);
-                vt.setWidth(640);
-                vt.setHeight(360);
-                vt.setDefault(true);
-
-                System.out.println("DEBUG: Attempting to save VideoThumbnail: " + vt.getThumbnailUid() + " for video: "
-                        + videoUid);
-                com.company.video_service.entity.VideoThumbnail savedVt = thumbnailRepository.saveAndFlush(vt);
-                System.out.println("DEBUG: VideoThumbnail saved. ID: " + savedVt.getVideoThumbnailId());
-
-            } catch (Exception e) {
-                // Log failure but don't fail the whole upload process
-                System.out.println("DEBUG: Thumbnail generation failed: " + e.getMessage());
-                e.printStackTrace();
-
-                video.setThumbnailStatus("FAILED");
-                video.setUpdatedTimestamp(LocalDateTime.now());
-                videoRepository.save(video);
-            }
 
         } finally {
             // cleanup chunk files + chunk rows to free space

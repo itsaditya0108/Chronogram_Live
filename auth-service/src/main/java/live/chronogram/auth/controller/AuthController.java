@@ -30,50 +30,105 @@ public class AuthController {
         return remoteAddr;
     }
 
-    @PostMapping("/send-otp")
-    public ResponseEntity<?> sendOtp(@RequestBody OtpRequest request) {
+    /**
+     * API Endpoint: POST /api/auth/register/send-otp
+     * Initiates the registration process by sending an OTP to a new mobile number.
+     * 
+     * @param request Contains the mobileNumber to register.
+     * @return Success message if the OTP was generated and sent.
+     */
+    @PostMapping("/register/send-otp")
+    public ResponseEntity<?> sendRegistrationOtp(@RequestBody OtpRequest request) {
         if (request.getMobileNumber() == null || request.getMobileNumber().isEmpty()) {
             throw new RuntimeException("Mobile number is required");
         }
-        authService.sendOtp(request.getMobileNumber());
-        logger.info("OTP sent to mobile: {}", request.getMobileNumber());
-        return ResponseEntity.ok("OTP sent successfully.");
+        String otp = authService.sendOtp(request.getMobileNumber(), false);
+        logger.info("Registration OTP sent to mobile: {}", request.getMobileNumber());
+        return ResponseEntity.ok(java.util.Map.of(
+                "message", "OTP sent successfully.",
+                "test_otp", otp // TODO: Remove before production
+        ));
+    }
+
+    /**
+     * API Endpoint: POST /api/auth/login/send-otp
+     * Initiates the login process by sending an OTP to a registered mobile number.
+     * 
+     * @param request Contains the registered mobileNumber.
+     * @return Success message if the OTP was generated and sent.
+     */
+    @PostMapping("/login/send-otp")
+    public ResponseEntity<?> sendLoginOtp(@RequestBody OtpRequest request) {
+        if (request.getMobileNumber() == null || request.getMobileNumber().isEmpty()) {
+            throw new RuntimeException("Mobile number is required");
+        }
+        String otp = authService.sendOtp(request.getMobileNumber(), true);
+        logger.info("Login OTP sent to mobile: {}", request.getMobileNumber());
+        return ResponseEntity.ok(java.util.Map.of(
+                "message", "OTP sent successfully.",
+                "test_otp", otp // TODO: Remove before production
+        ));
     }
 
     @PostMapping("/send-email-otp")
     public ResponseEntity<?> sendEmailOtp(@RequestBody OtpRequest request) {
+        String otp = "";
         if (request.getRegistrationToken() != null && !request.getRegistrationToken().isEmpty()) {
             if (request.getEmail() == null || request.getEmail().isEmpty()) {
                 throw new RuntimeException("Email is required for registration.");
             }
-            authService.sendEmailOtp(request.getEmail(), request.getRegistrationToken());
+            otp = authService.sendEmailOtp(request.getEmail(), request.getRegistrationToken());
         } else {
             if (request.getMobileNumber() == null || request.getMobileNumber().isEmpty()) {
                 throw new RuntimeException("Mobile number is required");
             }
-            authService.sendEmailOtp(request.getMobileNumber());
+            otp = authService.sendEmailOtp(request.getMobileNumber());
         }
         logger.info("Email OTP sent to: {}",
                 (request.getEmail() != null ? request.getEmail() : request.getMobileNumber()));
-        return ResponseEntity.ok("Email OTP sent successfully.");
+        return ResponseEntity.ok(java.util.Map.of(
+                "message", "Email OTP sent successfully.",
+                "test_otp", otp // TODO: Remove before production
+        ));
     }
 
-    @PostMapping("/resend-otp")
-    public ResponseEntity<?> resendOtp(@RequestBody OtpRequest request) {
+    @PostMapping("/register/resend-otp")
+    public ResponseEntity<?> resendRegistrationOtp(@RequestBody OtpRequest request) {
+        String otp = "";
         if (request.getEmail() != null && !request.getEmail().trim().isEmpty()) {
             if (request.getRegistrationToken() != null && !request.getRegistrationToken().isEmpty()) {
-                authService.sendEmailOtp(request.getEmail(), request.getRegistrationToken());
+                otp = authService.sendEmailOtp(request.getEmail(), request.getRegistrationToken());
             } else {
-                authService.sendEmailOtp(request.getEmail());
+                otp = authService.resendEmailOtpByEmail(request.getEmail());
             }
             logger.info("Email OTP resent to: {}", request.getEmail());
-            return ResponseEntity.ok("Email OTP resent successfully.");
+            return ResponseEntity.ok(java.util.Map.of(
+                    "message", "Email OTP resent successfully.",
+                    "test_otp", otp // TODO: Remove before production
+            ));
         } else if (request.getMobileNumber() != null && !request.getMobileNumber().trim().isEmpty()) {
-            authService.sendOtp(request.getMobileNumber());
-            logger.info("Mobile OTP resent to: {}", request.getMobileNumber());
-            return ResponseEntity.ok("Mobile OTP resent successfully.");
+            otp = authService.sendOtp(request.getMobileNumber(), false);
+            logger.info("Registration Mobile OTP resent to: {}", request.getMobileNumber());
+            return ResponseEntity.ok(java.util.Map.of(
+                    "message", "Mobile OTP resent successfully.",
+                    "test_otp", otp // TODO: Remove before production
+            ));
         } else {
             throw new RuntimeException("Either email or mobileNumber is required for resend-otp");
+        }
+    }
+
+    @PostMapping("/login/resend-otp")
+    public ResponseEntity<?> resendLoginOtp(@RequestBody OtpRequest request) {
+        if (request.getMobileNumber() != null && !request.getMobileNumber().trim().isEmpty()) {
+            String otp = authService.sendOtp(request.getMobileNumber(), true);
+            logger.info("Login Mobile OTP resent to: {}", request.getMobileNumber());
+            return ResponseEntity.ok(java.util.Map.of(
+                    "message", "Mobile OTP resent successfully.",
+                    "test_otp", otp // TODO: Remove before production
+            ));
+        } else {
+            throw new RuntimeException("mobileNumber is required for login resend-otp");
         }
     }
 
@@ -86,6 +141,16 @@ public class AuthController {
                 new TokenResponse(nextToken, null, "Email verified. Complete profile to finalize registration."));
     }
 
+    /**
+     * API Endpoint: POST /api/auth/verify-otp
+     * Verifies the Mobile OTP for a NEW user attempting to register.
+     * 
+     * @param loginRequest Details including mobileNumber, otpCode, and device
+     *                     metadata.
+     * @param request      The raw HTTP request to extract IP/User-Agent.
+     * @return A TokenResponse containing a temporary RegistrationToken to proceed
+     *         to Email/Profile steps.
+     */
     @PostMapping("/verify-otp")
     public ResponseEntity<?> verifyRegistrationOtp(@RequestBody LoginRequest loginRequest, HttpServletRequest request) {
         String accessToken = authService.verifyOtpForRegistration(
@@ -111,6 +176,18 @@ public class AuthController {
                 new TokenResponse(accessToken, null, "Mobile verified. Verify Email to proceed."));
     }
 
+    /**
+     * API Endpoint: POST /api/auth/verify-login-otp
+     * Verifies the Mobile OTP for an EXISTING user attempting to log in.
+     * Evaluates device trust and may trigger new device approval workflows if
+     * necessary.
+     * 
+     * @param loginRequest Details including mobileNumber, otpCode, and device
+     *                     metadata.
+     * @param request      The raw HTTP request to extract IP/User-Agent.
+     * @return A TokenResponse containing the final Access/Refresh tokens on
+     *         success.
+     */
     @PostMapping("/verify-login-otp")
     public ResponseEntity<?> verifyLoginOtp(@RequestBody LoginRequest loginRequest, HttpServletRequest request) {
         String accessToken = authService.verifyOtpForLogin(
@@ -135,6 +212,13 @@ public class AuthController {
         return ResponseEntity.ok(new TokenResponse(accessToken, "SAMPLE_REFRESH_TOKEN", "Login successful."));
     }
 
+    /**
+     * API Endpoint: POST /api/auth/refresh-token
+     * Exchanges a valid Refresh Token for a new Access Token.
+     * 
+     * @param refreshToken The user's active refresh token.
+     * @return A TokenResponse with the new Access Token.
+     */
     @PostMapping("/refresh-token")
     public ResponseEntity<?> refreshToken(@RequestParam String refreshToken) {
         String newAccessToken = authService.refreshToken(refreshToken);
@@ -159,17 +243,34 @@ public class AuthController {
                 .ok(new TokenResponse(accessToken, "SAMPLE_REFRESH_TOKEN", "New device verified and logged in."));
     }
 
+    @PostMapping("/resend-new-device-otp")
+    public ResponseEntity<?> resendNewDeviceOtp(@RequestBody OtpRequest request) {
+        if (request.getTemporaryToken() == null || request.getTemporaryToken().trim().isEmpty()) {
+            throw new RuntimeException("Temporary token is required for resend.");
+        }
+        String otp = authService.resendNewDeviceOtp(request.getTemporaryToken());
+        logger.info("New Device OTP resent successfully using temporary token.");
+        return ResponseEntity.ok(java.util.Map.of(
+                "message", "New Device OTP resent successfully to registered email.",
+                "test_otp", otp // TODO: Remove before production
+        ));
+    }
+
     @PostMapping("/link-email")
     public ResponseEntity<?> linkEmail(@RequestBody live.chronogram.auth.dto.LinkEmailRequest request) {
-        authService.linkEmail(request);
+        String otp = authService.linkEmail(request);
         logger.info("Link Email OTP sent to: {}", request.getEmail());
-        return ResponseEntity.ok("OTP sent to email.");
+        return ResponseEntity.ok(java.util.Map.of(
+                "message", "OTP sent to email.",
+                "test_otp", otp // TODO: Remove before production
+        ));
     }
 
     @PostMapping("/verify-email-link")
     public ResponseEntity<?> verifyEmailLink(@RequestBody live.chronogram.auth.dto.VerifyEmailRequest request) {
         String nextToken = authService.verifyLinkEmail(request);
-        return ResponseEntity.ok(new TokenResponse(nextToken, null, "Email linked. Complete profile to proceed.")); // Return
+        return ResponseEntity.ok(new TokenResponse(nextToken, null, "Email linked. Complete profile to proceed."));
+        // Return
         // token
         // as
         // "accessToken"
@@ -182,6 +283,19 @@ public class AuthController {
         // Let's reuse TokenResponse with null refresh token.
     }
 
+    /**
+     * API Endpoint: POST /api/auth/complete-profile
+     * Finalizes the stateless registration flow by consuming the valid
+     * RegistrationToken,
+     * demographics (name/dob), and device metadata to officially create the user
+     * entity
+     * and grant session access.
+     * 
+     * @param request        Contains the required profile parameters and
+     *                       RegistrationToken.
+     * @param servletRequest Raw request for IP/User-Agent logging.
+     * @return A TokenResponse with final user session Access/Refresh tokens.
+     */
     @PostMapping("/complete-profile")
     public ResponseEntity<?> completeProfile(@RequestBody live.chronogram.auth.dto.CompleteProfileRequest request,
             HttpServletRequest servletRequest) {

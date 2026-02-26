@@ -10,7 +10,7 @@ import org.springframework.stereotype.Repository;
 public interface OtpVerificationRepository extends JpaRepository<OtpVerification, Long> {
     Optional<OtpVerification> findByTargetAndOtpTypeAndOtpCode(String target, OtpType otpType, String otpCode);
 
-    Optional<OtpVerification> findByTargetAndOtpType(String target, OtpType otpType);
+    Optional<OtpVerification> findTopByTargetAndOtpTypeOrderByCreatedTimestampDesc(String target, OtpType otpType);
 
     void deleteByTargetAndOtpType(String target, OtpType otpType);
 }

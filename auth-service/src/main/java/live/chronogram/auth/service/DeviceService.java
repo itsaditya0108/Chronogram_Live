@@ -15,6 +15,21 @@ public class DeviceService {
     @Autowired
     private UserDeviceRepository userDeviceRepository;
 
+    /**
+     * Registers a new device for a user, or updates an existing device's metadata
+     * (such as last login, app version, OS version, or location).
+     * 
+     * @param user        The User entity.
+     * @param deviceId    The unique hardware/software identifier for the device.
+     * @param simSerial   The hashed SIM serial (important for telecom/fintech
+     *                    strict binding).
+     * @param pushToken   The FCM or APNs token for push notifications.
+     * @param trustDevice Whether this device has successfully passed all
+     *                    verification hurdles
+     *                    and should be considered "trusted" for future logins
+     *                    without strict OTPs.
+     * @return The saved UserDevice entity.
+     */
     @Transactional
     public UserDevice registerOrUpdateDevice(User user, String deviceId, String simSerial, String pushToken,
             String deviceName, String deviceModel,
@@ -75,12 +90,22 @@ public class DeviceService {
         return userDeviceRepository.save(device);
     }
 
+    /**
+     * Checks if a specific device ID is marked as trusted for a given user.
+     * Trusted devices often bypass secondary 2FA prompts in subsequent logins.
+     */
     public boolean isDeviceTrusted(User user, String deviceId) {
         return userDeviceRepository.findByUser_UserIdAndDeviceId(user.getUserId(), deviceId)
                 .map(UserDevice::getIsTrusted)
                 .orElse(false);
     }
 
+    /**
+     * Checks if the user has *any* trusted device. Useful for determining if a
+     * login
+     * is occurring on a "First Device" vs a "Secondary Device" (which triggers
+     * security alerts).
+     */
     public boolean hasAnyTrustedDevice(Long userId) {
         return userDeviceRepository.findByUser_UserId(userId).stream()
                 .anyMatch(d -> Boolean.TRUE.equals(d.getIsTrusted()));

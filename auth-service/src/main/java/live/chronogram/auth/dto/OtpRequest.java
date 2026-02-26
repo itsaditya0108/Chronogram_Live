@@ -4,6 +4,10 @@ public class OtpRequest {
     private String mobileNumber;
     private String email;
     private String registrationToken;
+    private String temporaryToken;
+
+    @com.fasterxml.jackson.annotation.JsonProperty("isLogin")
+    private Boolean isLogin;
 
     public OtpRequest() {
     }
@@ -34,5 +38,21 @@ public class OtpRequest {
 
     public void setRegistrationToken(String registrationToken) {
         this.registrationToken = registrationToken;
+    }
+
+    public String getTemporaryToken() {
+        return temporaryToken;
+    }
+
+    public void setTemporaryToken(String temporaryToken) {
+        this.temporaryToken = temporaryToken;
+    }
+
+    public Boolean getIsLogin() {
+        return isLogin;
+    }
+
+    public void setIsLogin(Boolean isLogin) {
+        this.isLogin = isLogin;
     }
 }

@@ -24,7 +24,7 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/auth/me").authenticated() // Secure this endpoint
+                        .requestMatchers("/api/auth/me").authenticated()
                         .requestMatchers("/api/auth/**").permitAll() // Allow other auth endpoints (login/register)
                         .anyRequest().permitAll()) // Default permit all for dev, adjust for prod
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);

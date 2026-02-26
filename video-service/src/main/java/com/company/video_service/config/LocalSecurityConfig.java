@@ -23,7 +23,8 @@ public class LocalSecurityConfig { // Security configuration for local/developme
                 .csrf(csrf -> csrf.disable()) // Disable CSRF for easier testing
                 .cors(cors -> cors.configurationSource(corsConfigurationSource())) // Enable CORS with local settings
                 .authorizeHttpRequests(auth -> auth
-                        .anyRequest().permitAll() // Allow ALL requests without authentication for development
+                                .requestMatchers("/internal/**").permitAll()
+                                .anyRequest().permitAll() // Allow ALL requests without authentication for development
                                                   // convenience
                 // Note: In real scenarios, you might still want auth, but this setup implies
                 // "open" access for dev

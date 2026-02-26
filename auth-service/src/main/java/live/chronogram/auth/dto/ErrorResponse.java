@@ -8,6 +8,7 @@ public class ErrorResponse {
     private String error;
     private String message;
     private String maskedEmail; // Optional, for DeviceApproval exception
+    private String temporaryToken; // Optional, for secure email OTP resends
 
     public ErrorResponse(int status, String error, String message) {
         this.timestamp = LocalDateTime.now();
@@ -16,12 +17,13 @@ public class ErrorResponse {
         this.message = message;
     }
 
-    public ErrorResponse(int status, String error, String message, String maskedEmail) {
+    public ErrorResponse(int status, String error, String message, String maskedEmail, String temporaryToken) {
         this.timestamp = LocalDateTime.now();
         this.status = status;
         this.error = error;
         this.message = message;
         this.maskedEmail = maskedEmail;
+        this.temporaryToken = temporaryToken;
     }
 
     // Getters
@@ -45,6 +47,10 @@ public class ErrorResponse {
         return maskedEmail;
     }
 
+    public String getTemporaryToken() {
+        return temporaryToken;
+    }
+
     // Setters
     public void setTimestamp(LocalDateTime timestamp) {
         this.timestamp = timestamp;
@@ -64,5 +70,9 @@ public class ErrorResponse {
 
     public void setMaskedEmail(String maskedEmail) {
         this.maskedEmail = maskedEmail;
+    }
+
+    public void setTemporaryToken(String temporaryToken) {
+        this.temporaryToken = temporaryToken;
     }
 }
