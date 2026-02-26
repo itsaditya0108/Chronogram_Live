@@ -19,7 +19,11 @@ public class AuthappApplication extends SpringBootServletInitializer {
     public static void main(String[] args) {
         SpringApplication.run(AuthappApplication.class, args);
     }
+
+
 }
+
+
 
 //    @Bean
 //    CommandLineRunner test(UserRepository repo) {

@@ -42,6 +42,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
+        String path = request.getRequestURI();
+
+        // IMPORTANT: skip admin routes
+        if (path.startsWith("/api/admin/")) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+
         String token = authHeader.substring(7);
 
         try {
@@ -71,6 +80,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
             SecurityContextHolder.getContext()
                     .setAuthentication(authentication);
+
+            String statusId = user.getStatus().getId();
+
+            if ("02".equals(statusId) || "03".equals(statusId) || "04".equals(statusId)) {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                return;
+            }
 
         } catch (Exception e) {
             logger.error("JWT Authentication failed: {}", e.getMessage());

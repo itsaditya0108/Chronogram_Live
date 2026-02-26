@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chronogram Admin</title>
+    <link rel="stylesheet" href="css/admin.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <!-- Using Ionicons for icons -->
+    <script type="module" src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.esm.js"></script>
+    <script nomodule src="https://unpkg.com/ionicons@7.1.0/dist/ionicons/ionicons.js"></script>
+</head>
+
+<body>
+    <!-- OVERLAY FOR MOBILE SIDEBAR -->
+    <div class="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+    <div class="admin-layout">
+        <!-- SIDEBAR -->
+        <aside class="admin-sidebar" id="adminSidebar">
+            <div class="sidebar-header-mobile">
+                <div class="sidebar-brand">Chronogram</div>
+                <button class="close-sidebar-btn" onclick="toggleSidebar()">
+                    <ion-icon name="close-outline"></ion-icon>
+                </button>
+            </div>
+
+            <div class="sidebar-header">
+                <img src="images/admin-logo.png" alt="Chronogram" class="brand-logo" style="height: 32px; width: auto;">
+                <span class="logo-text">Chronogram</span>
+            </div>
+
+            <ul class="nav-menu">
+                <li class="nav-item">
+                    <a href="#" class="nav-link active"
+                        onclick="switchView('dashboard', this); toggleSidebarOnMobile()">
+                        <span class="nav-icon"><ion-icon name="grid-outline"></ion-icon></span>
+                        Dashboard
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" onclick="switchView('users', this); toggleSidebarOnMobile()">
+                        <span class="nav-icon"><ion-icon name="people-outline"></ion-icon></span>
+                        Users
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" onclick="switchView('audit', this); toggleSidebarOnMobile()">
+                        <span class="nav-icon"><ion-icon name="document-text-outline"></ion-icon></span>
+                        Audit Logs
+                    </a>
+                </li>
+                <li class="nav-item"
+                    style="margin-top: auto; border-top: 1px solid var(--border-color); padding-top: 12px;">
+                    <a href="dashboard.html" class="nav-link">
+                        <span class="nav-icon"><ion-icon name="arrow-back-outline"></ion-icon></span>
+                        Back to Dashboard
+                    </a>
+                </li>
+            </ul>
+
+            <button class="logout-btn" onclick="handleLogout()">
+                <ion-icon name="log-out-outline" style="vertical-align: middle; margin-right: 8px;"></ion-icon>
+                Logout
+            </button>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="admin-main">
+            <!-- TOP BAR -->
+            <header class="top-bar">
+                <button class="menu-btn" onclick="toggleSidebar()">
+                    <ion-icon name="menu-outline"></ion-icon>
+                </button>
+                <div class="page-title" id="pageTitle">Overview</div>
+                <div class="admin-profile">
+                    <span id="adminUsername">Admin</span>
+                </div>
+            </header>
+
+            <!-- DYNAMIC CONTENT AREA -->
+            <div class="content-area" id="contentArea">
+                <!-- Content injected via JS -->
+                <div style="text-align: center; margin-top: 50px; color: #666;">Loading...</div>
+            </div>
+        </main>
+    </div>
+
+    <!-- USER DETAILS MODAL -->
+    <div id="userModal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-btn" onclick="closeUserModal()">&times;</span>
+            <h2 id="modalUserTitle">User Details</h2>
+            <div id="modalUserContent">Loading...</div>
+        </div>
+    </div>
+
+    <!-- BLOCK USER MODAL -->
+    <div id="blockUserModal" class="modal hidden">
+        <div class="modal-content"
+            style="max-width: 450px; padding: 0; overflow: hidden; background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);">
+            <div
+                style="background: #1e293b; padding: 20px 24px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center;">
+                <h2 style="margin: 0; font-size: 20px; color: #f8fafc; display: flex; align-items: center; gap: 10px;">
+                    <ion-icon name="shield-half-outline" style="color: #ef4444; font-size: 24px;"></ion-icon> Block User
+                </h2>
+                <span class="close-btn" onclick="closeBlockUserModal()"
+                    style="font-size: 24px; cursor: pointer; color: #94a3b8;">&times;</span>
+            </div>
+
+            <div style="padding: 24px;">
+                <p style="margin-top: 0; margin-bottom: 20px; color: #94a3b8; font-size: 14px; line-height: 1.5;">
+                    Blocking this user will immediately revoke their access to the platform. Please select an
+                    appropriate reason for administrative tracking.
+                </p>
+
+                <div style="margin-bottom: 24px;">
+                    <label
+                        style="display: block; margin-bottom: 8px; font-weight: 600; color: #e2e8f0; font-size: 14px;">Select
+                        Reason:</label>
+                    <select id="blockReasonSelect" class="form-input"
+                        style="width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #334155; background: #1e293b; color: #f8fafc; font-size: 14px; outline: none; cursor: pointer;">
+                        <option value="Violation of terms">Violation of terms</option>
+                        <option value="Suspicious Activity / Bot">Suspicious Activity / Bot</option>
+                        <option value="Multiple failed login attempts">Multiple failed login attempts</option>
+                        <option value="Inappropriate interactions or content">Inappropriate interactions or content
+                        </option>
+                        <option value="Spam or Scam">Spam or Scam</option>
+                    </select>
+                </div>
+
+                <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 30px;">
+                    <button class="action-btn"
+                        style="background: #334155; color: white; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; transition: background 0.2s;"
+                        onmouseover="this.style.background='#475569'" onmouseout="this.style.background='#334155'"
+                        onclick="closeBlockUserModal()">Cancel</button>
+                    <button class="action-btn"
+                        style="background: #ef4444; color: white; padding: 10px 20px; border-radius: 8px; font-weight: 600; border: none; cursor: pointer; transition: background 0.2s;"
+                        onmouseover="this.style.background='#dc2626'" onmouseout="this.style.background='#ef4444'"
+                        onclick="confirmBlockUser()">Block User</button>
+                </div>
+                <input type="hidden" id="blockUserIdInput" value="">
+            </div>
+        </div>
+    </div>
+
+    <!-- GLOBAL CONFIRMATION MODAL -->
+    <div id="customConfirmModal" class="modal hidden">
+        <div class="modal-content"
+            style="max-width: 400px; padding: 0; overflow: hidden; background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);">
+            <div
+                style="background: #1e293b; padding: 20px 24px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center;">
+                <h2 style="margin: 0; font-size: 18px; color: #f8fafc; display: flex; align-items: center; gap: 10px;">
+                    <ion-icon name="help-circle-outline" style="color: #3b82f6; font-size: 24px;"></ion-icon> Confirm
+                    Action
+                </h2>
+                <span class="close-btn" onclick="closeCustomConfirm()"
+                    style="font-size: 24px; cursor: pointer; color: #94a3b8;">&times;</span>
+            </div>
+
+            <div style="padding: 24px;">
+                <p id="customConfirmMessage"
+                    style="margin-top: 0; margin-bottom: 30px; color: #e2e8f0; font-size: 15px; line-height: 1.5;">
+                    Are you sure you want to proceed?
+                </p>
+
+                <div style="display: flex; justify-content: flex-end; gap: 12px;">
+                    <button class="action-btn" id="customConfirmCancelBtn"
+                        style="background: #334155; color: white; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; transition: background 0.2s;"
+                        onmouseover="this.style.background='#475569'" onmouseout="this.style.background='#334155'"
+                        onclick="closeCustomConfirm()">Cancel</button>
+                    <button class="action-btn" id="customConfirmOkBtn"
+                        style="background: #f59e0b; color: white; padding: 10px 20px; border-radius: 8px; font-weight: 600; border: none; cursor: pointer; transition: background 0.2s;"
+                        onmouseover="this.style.background='#d97706'"
+                        onmouseout="this.style.background='#f59e0b'">Confirm</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/admin.js"></script>
+</body>
+
+</html>

@@ -38,6 +38,8 @@ public class UserService {
     private final UserDeviceService userDeviceService;
     private final SecurityHelperService securityHelperService;
 
+    private final AdminRepository adminRepository;
+
     public UserService(
             UserRepository userRepository,
             PasswordEncoder passwordEncoder,
@@ -52,7 +54,8 @@ public class UserService {
             JwtService jwtService,
             IpLocationService ipLocationService,
             UserDeviceService userDeviceService,
-            SecurityHelperService securityHelperService) {
+            SecurityHelperService securityHelperService,
+            AdminRepository adminRepository) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.otpRepository = otpRepository;
@@ -67,6 +70,7 @@ public class UserService {
         this.ipLocationService = ipLocationService;
         this.userDeviceService = userDeviceService;
         this.securityHelperService = securityHelperService;
+        this.adminRepository = adminRepository;
     }
 
     /* ================= REGISTER ================= */
@@ -133,6 +137,9 @@ public class UserService {
                 .orElseThrow(() -> new ApiException("INVALID_CREDENTIALS"));
 
         if (!"Active".equalsIgnoreCase(user.getStatus().getName())) {
+            if (user.getStatusReason() != null && !user.getStatusReason().isEmpty()) {
+                throw new ApiException("USER_BLOCKED", "Blocked: " + user.getStatusReason());
+            }
             throw new ApiException("USER_NOT_ACTIVE");
         }
 
@@ -193,6 +200,36 @@ public class UserService {
 
         loginHistoryService.recordLoginAttempt(user.getId(), user.getName(), true, null, httpRequest, deviceContext);
 
+        // CHECK IF USER IS ADMIN AND GENERATE TOKEN
+        // CHECK IF USER IS ADMIN AND GENERATE TOKEN
+        boolean isAdmin = false;
+        String adminToken = null;
+        try {
+            log.error("DEBUG_ADMIN_CHECK: Login - Checking admin status for email: '{}'", user.getEmail());
+            java.util.Optional<Admin> adminOpt = adminRepository.findByEmail(user.getEmail());
+
+            if (adminOpt.isPresent()) {
+                log.error("DEBUG_ADMIN_CHECK: Admin found! Active status: {}", adminOpt.get().getIsActive());
+                if (Boolean.TRUE.equals(adminOpt.get().getIsActive())) {
+                    String potentialToken = jwtService.generateAdminToken(adminOpt.get().getAdminId(),
+                            adminOpt.get().getRole());
+                    if (potentialToken != null) {
+                        adminToken = potentialToken;
+                        isAdmin = true;
+                        log.error("DEBUG_ADMIN_CHECK: Admin token generated! isAdmin=true");
+                    } else {
+                        log.error("DEBUG_ADMIN_CHECK: Admin token generation failed (null)");
+                    }
+                } else {
+                    log.error("DEBUG_ADMIN_CHECK: Admin is INACTIVE");
+                }
+            } else {
+                log.error("DEBUG_ADMIN_CHECK: No Admin found for email: '{}'", user.getEmail());
+            }
+        } catch (Exception e) {
+            log.error("DEBUG_ADMIN_CHECK: Exception during admin check", e);
+        }
+
         return new LoginResponse(
                 accessToken,
                 sessionResult != null ? sessionResult.getRawRefreshToken() : null,
@@ -202,7 +239,9 @@ public class UserService {
                 user.getPhone(),
                 user.isEmailVerified(),
                 user.isPhoneVerified(),
-                user.getStatus().getName());
+                user.getStatus().getName(),
+                isAdmin,
+                adminToken);
     }
 
     /* ================= SESSION ================= */
@@ -273,6 +312,29 @@ public class UserService {
 
         userSessionRepository.save(newSession);
 
+        // Check Admin Status for refresh
+        // Check Admin Status for refresh
+        boolean isAdmin = false;
+        String adminToken = null;
+        try {
+            log.error("DEBUG_ADMIN_CHECK: Refresh - Checking admin status for email: '{}'",
+                    matched.getUser().getEmail());
+            java.util.Optional<Admin> adminOpt = adminRepository.findByEmail(matched.getUser().getEmail());
+            if (adminOpt.isPresent() && Boolean.TRUE.equals(adminOpt.get().getIsActive())) {
+                String potentialToken = jwtService.generateAdminToken(adminOpt.get().getAdminId(),
+                        adminOpt.get().getRole());
+                if (potentialToken != null) {
+                    adminToken = potentialToken;
+                    isAdmin = true;
+                    log.error("DEBUG_ADMIN_CHECK: Refresh - Admin token generated! isAdmin=true");
+                }
+            } else {
+                log.error("DEBUG_ADMIN_CHECK: Refresh - No Active Admin found");
+            }
+        } catch (Exception e) {
+            log.error("Failed to check admin status for user refresh: {}", matched.getUser().getEmail(), e);
+        }
+
         return new LoginResponse(
                 jwtService.generateAccessToken(matched.getUser(), newSession.getSessionId()),
                 null,
@@ -282,7 +344,9 @@ public class UserService {
                 matched.getUser().getPhone(),
                 matched.getUser().isEmailVerified(),
                 matched.getUser().isPhoneVerified(),
-                matched.getUser().getStatus().getName());
+                matched.getUser().getStatus().getName(),
+                isAdmin,
+                adminToken);
     }
 
     /* ================= LOGOUT ================= */
@@ -438,6 +502,31 @@ public class UserService {
 
         String accessToken = jwtService.generateAccessToken(user, sessionResult.getSession().getSessionId());
 
+        // CHECK IF USER IS ADMIN
+        boolean isAdmin = false;
+        String adminToken = null;
+        try {
+            log.error("DEBUG_ADMIN_CHECK: NewDevice - Checking admin status for email: '{}'", user.getEmail());
+            java.util.Optional<Admin> adminOpt = adminRepository.findByEmail(user.getEmail());
+
+            if (adminOpt.isPresent()) {
+                log.error("DEBUG_ADMIN_CHECK: NewDevice - Admin found! Active: {}", adminOpt.get().getIsActive());
+                if (Boolean.TRUE.equals(adminOpt.get().getIsActive())) {
+                    String potentialToken = jwtService.generateAdminToken(adminOpt.get().getAdminId(),
+                            adminOpt.get().getRole());
+                    if (potentialToken != null) {
+                        adminToken = potentialToken;
+                        isAdmin = true;
+                        log.error("DEBUG_ADMIN_CHECK: NewDevice - Admin token generated! isAdmin=true");
+                    }
+                }
+            } else {
+                log.error("DEBUG_ADMIN_CHECK: NewDevice - No Active Admin found");
+            }
+        } catch (Exception e) {
+            log.error("Failed to check admin status for new device: {}", user.getEmail(), e);
+        }
+
         return new LoginResponse(
                 accessToken,
                 sessionResult.getRawRefreshToken(),
@@ -447,7 +536,9 @@ public class UserService {
                 user.getPhone(),
                 user.isEmailVerified(),
                 user.isPhoneVerified(),
-                user.getStatus().getName());
+                user.getStatus().getName(),
+                isAdmin,
+                adminToken);
     }
 
     @Transactional

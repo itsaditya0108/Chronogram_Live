@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
@@ -16,16 +17,18 @@ public interface UserSessionRepository
   Optional<UserSession> findByRefreshTokenHashAndIsRevokedFalse(
       String refreshTokenHash);
 
-  @Modifying
-  @Query("""
-          UPDATE UserSession s
-          SET s.isRevoked = true
-          WHERE s.user.id = :userId
-            AND (s.isRevoked = false OR s.isRevoked IS NULL)
-      """)
-  int revokeAllSessions(@Param("userId") Long userId);
+    @Transactional
+    @Modifying
+    @Query("""
+        UPDATE UserSession s
+        SET s.isRevoked = true
+        WHERE s.user.id = :userId
+          AND (s.isRevoked = false OR s.isRevoked IS NULL)
+    """)
+    int revokeAllSessions(@Param("userId") Long userId);
 
-  @Modifying
+
+    @Modifying
   @Query("""
           UPDATE UserSession s
           SET s.isRevoked = true
@@ -48,4 +51,6 @@ public interface UserSessionRepository
             AND s.isRevoked = false
       """)
   List<UserSession> findActiveSessions(@Param("userId") Long userId);
+
+
 }

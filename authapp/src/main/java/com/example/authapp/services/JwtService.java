@@ -55,7 +55,38 @@ public class JwtService {
                 return claims.get("sid", Long.class);
         }
 
-        // This throws exception automatically if:
+    public String generateAdminToken(Long adminId, String role) {
+
+        return Jwts.builder()
+                .setSubject(String.valueOf(adminId))
+                .claim("type", "ADMIN")
+                .claim("role", role)
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + 1000L * 60 * 60 * 12))
+                .signWith(Keys.hmacShaKeyFor(secret.getBytes()), SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+
+    public Long validateAndGetAdminId(String token) {
+
+        Claims claims = Jwts.parserBuilder()
+                .setSigningKey(Keys.hmacShaKeyFor(secret.getBytes()))
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+
+        String type = claims.get("type", String.class);
+
+        if (!"ADMIN".equals(type)) {
+            throw new RuntimeException("Invalid admin token");
+        }
+
+        return Long.parseLong(claims.getSubject());
+    }
+
+
+    // This throws exception automatically if:
         // token expired
         // token invalid
         // signature tampered

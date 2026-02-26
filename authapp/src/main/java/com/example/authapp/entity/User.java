@@ -33,7 +33,6 @@ public class User {
     @Column(name = "created_timestamp", updatable = false, insertable = false)
     private LocalDateTime createdTimestamp;
 
-
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
@@ -47,17 +46,18 @@ public class User {
     @JoinColumn(name = "user_status_id", nullable = false)
     private UserStatus status;
 
-
     @Column(name = "failed_login_attempts")
     private Integer failedLoginAttempts = 0;
 
     @Column(name = "locked_until")
     private LocalDateTime lockedUntil;
 
-    //====Getter/Setter=====
+    @Column(name = "status_reason", length = 500)
+    private String statusReason;
 
+    // ====Getter/Setter=====
 
-    public Long getId  () {
+    public Long getId() {
         return userId;
     }
 
@@ -113,7 +113,6 @@ public class User {
         this.emailVerified = emailVerified;
     }
 
-
     public boolean isPhoneVerified() {
         return phoneVerified;
     }
@@ -168,6 +167,14 @@ public class User {
 
     public void setLockedUntil(LocalDateTime lockedUntil) {
         this.lockedUntil = lockedUntil;
+    }
+
+    public String getStatusReason() {
+        return statusReason;
+    }
+
+    public void setStatusReason(String statusReason) {
+        this.statusReason = statusReason;
     }
 
 }

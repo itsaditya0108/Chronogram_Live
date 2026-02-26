@@ -11,6 +11,10 @@
 <body>
 
     <div class="container">
+        <div class="brand-header">
+            <img src="images/admin-logo.png" alt="Chronogram Logo">
+            <div class="brand-name">Chronogram</div>
+        </div>
         <h2>Login</h2>
 
         <form id="loginForm">
@@ -129,6 +133,9 @@
                     sessionStorage.setItem("accessToken", data.accessToken);
                     sessionStorage.setItem("refreshToken", data.refreshToken);
                     // SAVE USER INFO (CRITICAL BUG FIX)
+                    // Jackson serializes boolean isAdmin() -> "admin" field in JSON
+                    const isAdmin = data.admin === true || data.isAdmin === true;
+
                     sessionStorage.setItem("user", JSON.stringify({
                         userId: data.userId,
                         name: data.name,
@@ -136,8 +143,20 @@
                         phone: data.phone,
                         status: data.status,
                         emailVerified: data.emailVerified,
-                        phoneVerified: data.phoneVerified
+                        phoneVerified: data.phoneVerified,
+                        isAdmin: isAdmin
                     }));
+
+                    if (isAdmin && data.adminAccessToken) {
+                        localStorage.setItem("adminAccessToken", data.adminAccessToken);
+                        localStorage.setItem("user", JSON.stringify({
+                            userId: data.userId,
+                            name: data.name,
+                            email: data.email,
+                            isAdmin: true
+                        }));
+                    }
+
                     window.location.href = "dashboard.html";
                 } else {
                     modalResult.innerText = data.message || "Verification failed";
@@ -252,6 +271,7 @@
                 });
 
                 const data = await res.json();
+                console.log("DEBUG: Login Response Data:", data);
 
                 if (res.ok) {
                     // store tokens
@@ -259,6 +279,9 @@
                     sessionStorage.setItem("refreshToken", data.refreshToken);
 
                     // optional user info
+                    // Jackson serializes boolean isAdmin() -> "admin" field in JSON
+                    const isAdmin = data.admin === true || data.isAdmin === true;
+
                     sessionStorage.setItem("user", JSON.stringify({
                         userId: data.userId,
                         name: data.name,
@@ -266,8 +289,19 @@
                         phone: data.phone,
                         status: data.status,
                         emailVerified: data.emailVerified,
-                        phoneVerified: data.phoneVerified
+                        phoneVerified: data.phoneVerified,
+                        isAdmin: isAdmin
                     }));
+
+                    if (isAdmin && data.adminAccessToken) {
+                        localStorage.setItem("adminAccessToken", data.adminAccessToken);
+                        localStorage.setItem("user", JSON.stringify({
+                            userId: data.userId,
+                            name: data.name,
+                            email: data.email,
+                            isAdmin: true
+                        }));
+                    }
 
                     window.location.href = "dashboard.html";
                     return;
@@ -288,8 +322,10 @@
                             Please try again in 20 minutes.
                         </span>
                      `;
-                } else if (data.error === "NEW_DEVICE_VERIFICATION_REQUIRED" || res.status === 403) {
-                    // Open Modal
+                } else if (data.error === "USER_BLOCKED" || data.error === "USER_NOT_ACTIVE") {
+                    loginResult.innerHTML = `<span class="error" style="font-weight: bold; color: var(--danger);">${data.message}</span>`;
+                } else if (data.error === "NEW_DEVICE_VERIFICATION_REQUIRED" || (res.status === 403 && !data.error)) {
+                    // Open Modal only if specifically NEW_DEVICE or unknown 403
                     pendingEmail = email;
                     modal.style.display = "block";
                     loginResult.innerText = "";

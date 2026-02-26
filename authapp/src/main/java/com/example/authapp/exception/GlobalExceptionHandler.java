@@ -63,6 +63,14 @@ public class GlobalExceptionHandler {
                                                                 "USER_NOT_ACTIVE",
                                                                 "Your account is not active. Please contact support."));
 
+                        case "USER_BLOCKED" ->
+                                ResponseEntity.status(403).body(
+                                                new ApiErrorResponse(
+                                                                403,
+                                                                "USER_BLOCKED",
+                                                                ex.getMessage())); // Uses the custom message passed in
+                                                                                   // exception
+
                         case "ACCOUNT_LOCKED" ->
                                 ResponseEntity.status(423).body(
                                                 new ApiErrorResponse(

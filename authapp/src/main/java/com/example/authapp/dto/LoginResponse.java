@@ -12,6 +12,8 @@ public class LoginResponse {
     private boolean emailVerified;
     private boolean phoneVerified;
     private String status;
+    private boolean isAdmin;
+    private String adminAccessToken;
 
     // ✅ FULL LOGIN CONSTRUCTOR
     public LoginResponse(
@@ -23,8 +25,9 @@ public class LoginResponse {
             String phone,
             boolean emailVerified,
             boolean phoneVerified,
-            String status
-    ) {
+            String status,
+            boolean isAdmin,
+            String adminAccessToken) {
         this.accessToken = accessToken;
         this.refreshToken = refreshToken;
         this.userId = userId;
@@ -34,11 +37,21 @@ public class LoginResponse {
         this.emailVerified = emailVerified;
         this.phoneVerified = phoneVerified;
         this.status = status;
+        this.isAdmin = isAdmin;
+        this.adminAccessToken = adminAccessToken;
     }
 
     // ✅ REFRESH TOKEN CONSTRUCTOR (ACCESS TOKEN ONLY)
     public LoginResponse(String accessToken) {
         this.accessToken = accessToken;
+    }
+
+    public boolean isAdmin() {
+        return isAdmin;
+    }
+
+    public String getAdminAccessToken() {
+        return adminAccessToken;
     }
 
     public String getAccessToken() {

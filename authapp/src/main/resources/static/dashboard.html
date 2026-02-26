@@ -3,9 +3,9 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Chronogram</title>
-    <link rel="stylesheet" href="css/dashboard.css?v=hero4">
+    <link rel="stylesheet" href="css/dashboard.css?v=hero8">
     <link
         href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Playfair+Display:ital,wght@0,600;1,600&display=swap"
         rel="stylesheet">
@@ -135,7 +135,8 @@
                 left: 0;
                 width: 100%;
                 height: 100%;
-                z-index: 20;
+                z-index: 200;
+                /* Covers bottom nav (100) */
                 transform: translateX(100%);
                 transition: transform 0.3s ease;
                 display: flex;
@@ -184,7 +185,11 @@
 
     <!-- SIDEBAR (Desktop) -->
     <div class="sidebar">
-        <div class="brand">Chronogram</div>
+        <div class="brand">
+            <img src="images/admin-logo.png" alt="Chronogram" style="height: 32px; width: auto; cursor: pointer;"
+                onclick="window.location.href='dashboard.html'">
+            <span class="brand-text">Chronogram</span>
+        </div>
         <ul class="nav-links">
             <li class="nav-item active" onclick="switchView('dashboard', this)">
                 <ion-icon name="people-outline"></ion-icon>
@@ -206,6 +211,11 @@
             <li class="nav-item" onclick="switchView('profile', this)">
                 <ion-icon name="person-outline"></ion-icon>
                 <span>Profile</span>
+            </li>
+            <li class="nav-item hidden" id="adminSidebarLink" onclick="window.location.href='admin-dashboard.html'"
+                style="display: none !important;">
+                <ion-icon name="shield-checkmark-outline"></ion-icon>
+                <span>Admin Panel</span>
             </li>
         </ul>
         <div class="user-profile-summary" onclick="switchView('profile', document.querySelectorAll('.nav-item')[3])">
@@ -234,6 +244,10 @@
         <div class="bottom-nav-item" onclick="switchView('profile', this, true)">
             <ion-icon name="person-outline"></ion-icon>
         </div>
+        <div class="bottom-nav-item hidden" id="adminMobileLink" onclick="window.location.href='admin-dashboard.html'"
+            style="display: none !important;">
+            <ion-icon name="shield-checkmark-outline"></ion-icon>
+        </div>
     </div>
 
     <!-- MAIN CONTENT -->
@@ -261,9 +275,14 @@
                 <!-- HERO QUOTES SECTION (Follows content, Centered) -->
                 <div id="dashboardHero" class="dashboard-hero"
                     style="flex-shrink: 0; margin-top: 40px; margin-bottom: 40px; text-align: center; width: 100%;">
-                    <p class="hero-line-1">Timeless moments, preserved forever.</p>
-                    <p class="hero-line-2">Share your world in 4K Video & High-Res Photos.</p>
-                    <p class="hero-line-3">SECURE CHAT • INSTANT SHARING • NO LIMITS</p>
+                    <p class="hero-line-1"
+                        style="color: var(--text-primary); font-size: 2.2rem; font-weight: 500; margin-bottom: 8px;">
+                        Timeless moments, preserved forever.</p>
+                    <p class="hero-line-2" style="color: var(--text-secondary); font-size: 1rem; margin-bottom: 15px;">
+                        Share your world in 4K Video & High-Res Photos.</p>
+                    <p class="hero-line-3"
+                        style="color: var(--primary-color); font-size: 0.9rem; font-weight: bold; letter-spacing: 1px;">
+                        SECURE CHAT • INSTANT SHARING • NO LIMITS</p>
                 </div>
             </div>
         </div>
@@ -274,16 +293,7 @@
                 <h2>Your Images</h2>
 
                 <div class="upload-controls">
-                    <!-- Group 1: Standard Upload -->
-                    <div class="control-group">
-                        <label>Upload Images</label>
-                        <div class="input-row">
-                            <input type="file" id="imageUploadInput" multiple accept="image/*" />
-                            <button class="btn btn-primary" onclick="uploadImages()">
-                                <ion-icon name="cloud-upload-outline"></ion-icon> Upload
-                            </button>
-                        </div>
-                    </div>
+                    <!-- Video Sync or Folder Sync logic goes below -->
 
                     <!-- Group 2: Sync Folder -->
                     <div class="control-group">
@@ -347,88 +357,94 @@
             </div>
         </div>
 
+
         <!-- MESSAGES VIEW -->
         <div id="view-chat" class="view-container hidden">
-            <!-- Sidebar for chats -->
-            <div class="chat-sidebar" id="chatSidebar">
-                <div class="header">
-                    <h2>Direct</h2>
-                    <button class="btn btn-primary" onclick="startNewChat(event)">New Chat</button>
-                    <!-- New Chat Box -->
-                    <div id="newChatBox" class="new-chat-box hidden">
-                        <input type="text" id="userSearchInput" class="form-input" placeholder="Search user..." />
-                        <div id="userSearchResults"></div>
+            <div class="chat-layout">
+                <!-- Sidebar for chats -->
+                <div class="chat-sidebar" id="chatSidebar">
+                    <div class="chat-header-bar">
+                        <h2 style="margin: 0;">Direct</h2>
+                        <button class="btn btn-primary" onclick="startNewChat(event)">New Chat</button>
+                        <!-- New Chat Box -->
+                        <div id="newChatBox" class="new-chat-box hidden">
+                            <input type="text" id="userSearchInput" class="form-input" placeholder="Search user..." />
+                            <div id="userSearchResults"></div>
+                        </div>
                     </div>
+
+                    <div class="conversation-list" id="conversationList"></div>
                 </div>
 
-                <div class="conversation-list" id="conversationList"></div>
-            </div>
+                <!-- Chat Main -->
+                <div class="chat-main" id="chatMain">
+                    <!-- Mobile Back Header -->
+                    <!-- Chat Header -->
+                    <div class="chat-header-bar">
+                        <button class="menu-btn mobile-only"
+                            onclick="document.getElementById('chatMain').classList.remove('active')">
+                            <ion-icon name="arrow-back-outline"></ion-icon>
+                        </button>
 
-            <!-- Chat Main -->
-            <div class="chat-main" id="chatMain">
-                <!-- Mobile Back Header -->
-                <!-- Chat Header -->
-                <div class="chat-header">
-                    <button class="menu-btn mobile-only"
-                        onclick="document.getElementById('chatMain').classList.remove('active')">
-                        <ion-icon name="arrow-back-outline"></ion-icon>
-                    </button>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <!-- Chat Header Avatar -->
+                            <div class="user-avatar" style="width: 40px; height: 40px; cursor: pointer;"
+                                onclick="openProfileImageModal()">
+                                <img id="chatHeaderImg" src=""
+                                    style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: none;" />
+                                <div id="chatHeaderFallback"
+                                    style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-weight: bold; border-radius: 50%;">
+                                </div>
+                            </div>
 
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <!-- Chat Header Avatar -->
-                        <div class="user-avatar" style="width: 40px; height: 40px; cursor: pointer;"
-                            onclick="openProfileImageModal()">
-                            <img id="chatHeaderImg" src=""
-                                style="width: 100%; height: 100%; border-radius: 50%; object-fit: cover; display: none;" />
-                            <div id="chatHeaderFallback"
-                                style="width: 100%; height: 100%; background: #eee; display: flex; align-items: center; justify-content: center; font-weight: bold; border-radius: 50%;">
+                            <div>
+                                <div class="chat-title" id="chatHeaderName" style="font-weight: 600;">Select a chat
+                                </div>
+                                <div class="chat-members" id="chatHeaderMembers"></div>
                             </div>
                         </div>
 
-                        <div>
-                            <div class="chat-title" id="chatHeaderName" style="font-weight: 600;">Select a chat</div>
-                            <div class="chat-members" id="chatHeaderMembers"></div>
+                        <div style="flex: 1;"></div>
+                        <div style="position: relative;">
+                            <button id="addMemberBtn" class="btn btn-secondary hidden"
+                                onclick="toggleAddMemberSearch(event)">+ Add Member</button>
+                            <div id="addMemberBox" class="new-chat-box hidden" style="width: 250px; right: 0;">
+                                <input type="text" id="addMemberInput" class="form-input"
+                                    placeholder="Search to add..." />
+                                <div id="addMemberResults"></div>
+                            </div>
                         </div>
                     </div>
 
-                    <div style="flex: 1;"></div>
-                    <div style="position: relative;">
-                        <button id="addMemberBtn" class="btn btn-secondary hidden"
-                            onclick="toggleAddMemberSearch(event)">+ Add Member</button>
-                        <div id="addMemberBox" class="new-chat-box hidden" style="width: 250px; right: 0;">
-                            <input type="text" id="addMemberInput" class="form-input" placeholder="Search to add..." />
-                            <div id="addMemberResults"></div>
+                    <div class="chat-messages" id="messageList">
+                        <div id="emptyState"
+                            style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center;">
+                            <ion-icon name="paper-plane-outline"
+                                style="font-size: 50px; margin-bottom: 12px;"></ion-icon>
+
+
+                            <h3>Your Messages</h3>
+                            <p>Send private photos and messages to a friend or group.</p>
+                            <button class="btn btn-primary" style="margin-top: 20px;" onclick="startNewChat()">Send
+                                Message</button>
                         </div>
                     </div>
-                </div>
 
-                <div class="chat-messages" id="messageList">
-                    <div id="emptyState"
-                        style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center;">
-                        <ion-icon name="paper-plane-outline" style="font-size: 50px; margin-bottom: 12px;"></ion-icon>
-
-
-                        <h3>Your Messages</h3>
-                        <p style="color: grey;">Send private photos and messages to a friend or group.</p>
-                        <button class="btn btn-primary" style="margin-top: 20px;" onclick="startNewChat()">Send
-                            Message</button>
+                    <div id="typingIndicator" class="typing hidden"
+                        style="padding-left: 20px; font-style: italic; color: #8e8e8e; font-size: 12px; margin-bottom: 5px;">
                     </div>
-                </div>
 
-                <div id="typingIndicator" class="typing hidden"
-                    style="padding-left: 20px; font-style: italic; color: #8e8e8e; font-size: 12px; margin-bottom: 5px;">
-                </div>
-
-                <div class="chat-input-area hidden" id="inputArea">
-                    <input type="file" id="chatImageInput" style="display: none;" accept="image/*"
-                        onchange="handleChatImageSelect()">
-                    <button class="icon-btn" onclick="document.getElementById('chatImageInput').click()"
-                        style="background:none; border:none; cursor:pointer; font-size:24px; color:#0288d1; margin-right:8px; display:flex; align-items:center;">
-                        <ion-icon name="image-outline"></ion-icon>
-                    </button>
-                    <textarea id="messageInput" class="message-input" placeholder="Message..." rows="1"
-                        onkeydown="handleChatInputKey(event)"></textarea>
-                    <button class="send-btn-text" id="sendBtn" onclick="sendMessage()">Send</button>
+                    <div class="chat-input-area hidden" id="inputArea">
+                        <input type="file" id="chatImageInput" style="display: none;" accept="image/*"
+                            onchange="handleChatImageSelect()">
+                        <button class="icon-btn" onclick="document.getElementById('chatImageInput').click()"
+                            style="background:none; border:none; cursor:pointer; font-size:24px; color:#0288d1; margin-right:8px; display:flex; align-items:center;">
+                            <ion-icon name="image-outline"></ion-icon>
+                        </button>
+                        <textarea id="messageInput" class="message-input" placeholder="Message..." rows="1"
+                            onkeydown="handleChatInputKey(event)"></textarea>
+                        <button class="send-btn-text" id="sendBtn" onclick="sendMessage()">Send</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -439,14 +455,13 @@
                 <h2>Profile</h2>
 
                 <div style="display: flex; flex-direction: column; align-items: center; margin-bottom: 20px;">
-                    <div
-                        style="position: relative; width: 100px; height: 100px; background: #f0f0f0; border-radius: 50%; overflow: hidden;">
+                    <div style="position: relative; width: 100px; height: 100px; border-radius: 50%; overflow: hidden;">
                         <img id="profileImg" src=""
                             style="width: 100%; height: 100%; object-fit: cover; cursor: pointer;"
                             onclick="toggleProfileContext()"
                             onerror="this.style.display='none'; document.getElementById('profileMainAvatar').style.display='flex';" />
                         <div id="profileMainAvatar" onclick="toggleProfileContext()"
-                            style="width: 100%; height: 100%; display: none; align-items: center; justify-content: center; font-size: 36px; font-weight: bold; color: #555; cursor: pointer;">
+                            style="width: 100%; height: 100%; display: none; align-items: center; justify-content: center; font-size: 36px; font-weight: bold; cursor: pointer;">
                         </div>
                         <div style="margin-top: 8px; font-size: 12px; color: #8e8e8e; text-align: center;"
                             id="profilePicStatusText">Loading...</div>
@@ -716,11 +731,49 @@
             if (user.phoneVerified) {
                 phoneBadge.className = "badge success";
                 phoneBadge.textContent = "Verified";
-                phoneBtn.textContent = "Change Phone Number";
+                phoneBtn.style.display = "none";
             } else {
                 phoneBadge.className = "badge warning";
                 phoneBadge.textContent = "Not Verified";
                 phoneBtn.textContent = "Verify Now";
+                phoneBtn.style.display = "inline-block";
+            }
+
+            // DEBUG: Log user state
+            console.error("DEBUG_ADMIN_CHECK: Dashboard User Object:", user);
+            console.error("DEBUG_ADMIN_CHECK: user.isAdmin raw:", user.isAdmin, "Type:", typeof user.isAdmin);
+
+            // Show Admin Panel if user is admin (STRICT CHECK)
+            const sidebarLink = document.getElementById("adminSidebarLink");
+            const mobileLink = document.getElementById("adminMobileLink");
+
+            // Explicit boolean conversion
+            const isUserAdmin = (user.isAdmin === true);
+            console.error("DEBUG_ADMIN_CHECK: Computed isUserAdmin:", isUserAdmin);
+
+            if (isUserAdmin) {
+                if (sidebarLink) {
+                    sidebarLink.classList.remove("hidden");
+                    sidebarLink.style.display = "flex"; // Override inline style
+                    sidebarLink.style.setProperty("display", "flex", "important");
+                }
+                if (mobileLink) {
+                    mobileLink.classList.remove("hidden");
+                    mobileLink.style.display = "flex"; // Override inline style
+                    mobileLink.style.setProperty("display", "flex", "important");
+                }
+            } else {
+                // FAILSAFE: Explicitly hide
+                if (sidebarLink) {
+                    sidebarLink.classList.add("hidden");
+                    sidebarLink.style.display = "none";
+                    sidebarLink.style.setProperty("display", "none", "important");
+                }
+                if (mobileLink) {
+                    mobileLink.classList.add("hidden");
+                    mobileLink.style.display = "none";
+                    mobileLink.style.setProperty("display", "none", "important");
+                }
             }
         }
 
@@ -1286,22 +1339,24 @@
         }
 
         async function setActiveProfilePicture(id) {
-            if (!confirm("Set this picture as your profile picture?")) return;
+            alert("Setting previous profile pictures as active is currently disabled or removed from the server.");
+            return;
+            // if (!confirm("Set this picture as your profile picture?")) return;
 
-            try {
-                const res = await fetch(`${IMAGE_BASE}/api/profile-picture/${id}/active`, {
-                    method: "PUT",
-                    headers: { "Authorization": "Bearer " + token }
-                });
+            // try {
+            //     const res = await fetch(`${IMAGE_BASE}/api/profile-picture/${id}/active`, {
+            //         method: "PUT",
+            //         headers: { "Authorization": "Bearer " + token }
+            //     });
 
-                if (res.ok) {
-                    loadProfile(); // Refresh
-                } else {
-                    alert("Failed to update profile picture");
-                }
-            } catch (e) {
-                console.error("Set active error", e);
-            }
+            //     if (res.ok) {
+            //         loadProfile(); // Refresh
+            //     } else {
+            //         alert("Failed to update profile picture");
+            //     }
+            // } catch (e) {
+            //     console.error("Set active error", e);
+            // }
         }
 
         async function deleteProfilePicture() {
@@ -1504,11 +1559,11 @@
                 const isUnread = (c.unreadCount > 0) && (Number(c.conversationId) !== Number(activeConversationId));
 
                 div.innerHTML = `
-            <div class="user-avatar" style="background: #eee; display: flex; align-items: center; justify-content: center;">
+            <div class="user-avatar" style="display: flex; align-items: center; justify-content: center;">
                 <img src="${IMAGE_BASE}/api/profile-picture/${(!isNaN(c.otherUserId) && c.otherUserId) ? c.otherUserId : (!isNaN(c.userId) ? c.userId : '0')}/small?token=${encodeURIComponent(token)}" 
                      onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'" 
                      style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
-                <div style="width:100%;height:100%;display:none;align-items:center;justify-content:center;font-weight:bold; font-size: 14px; color: #555;">
+                <div style="width:100%;height:100%;display:none;align-items:center;justify-content:center;font-weight:bold; font-size: 14px;">
                     ${avatar}
                 </div>
             </div>
@@ -1722,9 +1777,8 @@
 
             document.getElementById("emptyState")?.remove();
 
-            if (window.innerWidth <= 768) {
-                document.getElementById("chatMain").classList.add("active");
-            }
+            // Always add active class - CSS media queries handle whether this triggers a transition/layout change
+            document.getElementById("chatMain").classList.add("active");
 
             if (eventSource) {
                 eventSource.close();
@@ -2118,7 +2172,7 @@
                     <img src="${IMAGE_BASE}/api/profile-picture/${!isNaN(senderId) ? senderId : '0'}/small?token=${encodeURIComponent(token)}"
                          onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'"
                          style="width:100%;height:100%;object-fit:cover;" />
-                    <div style="width:100%;height:100%;background:#eee;display:none;align-items:center;justify-content:center;font-size:10px;font-weight:bold;color:#555;">
+                    <div style="width:100%;height:100%;display:none;align-items:center;justify-content:center;font-size:10px;font-weight:bold;">
                         ${initial}
                     </div>
                  `;
@@ -2536,12 +2590,12 @@
 
                 if (isGroup) {
                     fb.innerHTML = `<ion-icon name="people" style="font-size:20px;"></ion-icon>`;
-                    fb.style.backgroundColor = "#e0f2fe";
-                    fb.style.color = "#0288d1";
+                    fb.style.backgroundColor = "";
+                    fb.style.color = "";
                 } else {
                     fb.textContent = initial;
-                    fb.style.backgroundColor = (name && name !== "Unknown") ? "#e0f2fe" : "#eee";
-                    fb.style.color = (name && name !== "Unknown") ? "#0288d1" : "black";
+                    fb.style.backgroundColor = "";
+                    fb.style.color = "";
                 }
 
                 return;
@@ -2637,11 +2691,11 @@
                 div.className = "conversation-item";
 
                 div.innerHTML = `
-                    <div class="user-avatar" style="width:32px;height:32px; background: #eee; display: flex; align-items: center; justify-content: center;">
+                    <div class="user-avatar" style="width:32px;height:32px; display: flex; align-items: center; justify-content: center;">
                         <img src="${IMAGE_BASE}/api/profile-picture/${!isNaN(u.userId) ? u.userId : '0'}/small?token=${encodeURIComponent(token)}" 
                              onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'" 
                              style="width:100%;height:100%;border-radius:50%;object-fit:cover;" />
-                        <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-weight:bold; font-size: 10px; color: #555; display: none;">
+                        <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-weight:bold; font-size: 10px; display: none;">
                             ${(u.name || "U")[0].toUpperCase()}
                         </div>
                     </div>
@@ -3127,6 +3181,19 @@
             }
         }
 
+    </script>
+
+    <script>
+        // Check for Admin Token and show links
+        document.addEventListener("DOMContentLoaded", () => {
+            const adminToken = localStorage.getItem("adminToken");
+            if (adminToken) {
+                const sidebarLink = document.getElementById("adminSidebarLink");
+                const mobileLink = document.getElementById("adminMobileLink");
+                if (sidebarLink) sidebarLink.classList.remove("hidden");
+                if (mobileLink) mobileLink.classList.remove("hidden");
+            }
+        });
     </script>
 
 </html>

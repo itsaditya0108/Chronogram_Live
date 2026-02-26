@@ -29,7 +29,7 @@ public class UserSearchService {
 
         Pageable pageable = PageRequest.of(0, Math.min(limit, 20));
 
-        return userRepository.searchUsers(q, pageable)
+        return userRepository.searchUsers(q,null, pageable)
                 .stream()
                 .filter(u -> !u.getId().equals(selfUserId))
                 .map(u -> new UserSearchResponse(

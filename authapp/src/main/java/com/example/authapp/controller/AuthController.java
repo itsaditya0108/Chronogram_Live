@@ -106,13 +106,19 @@ public class AuthController {
 
         @PostMapping("/resend-otp")
         public ResponseEntity<?> resendOtp(
-                        @Valid @RequestBody ResendOtpRequest request) {
+                        @RequestBody ResendOtpRequest request) {
 
-                log.info("API | EMAIL_OTP | RESEND | email={}", request.getEmail());
-
-                userService.resendEmailOtp(request.getEmail());
-
-                log.info("API | EMAIL_OTP | RESENT | email={}", request.getEmail());
+                if (request.getEmail() != null && !request.getEmail().trim().isEmpty()) {
+                        log.info("API | EMAIL_OTP | RESEND | email={}", request.getEmail());
+                        userService.resendEmailOtp(request.getEmail());
+                        log.info("API | EMAIL_OTP | RESENT | email={}", request.getEmail());
+                } else if (request.getPhone() != null && !request.getPhone().trim().isEmpty()) {
+                        log.info("API | PHONE_OTP | RESEND | phone={}", request.getPhone());
+                        userService.sendPhoneOtp(request.getPhone());
+                        log.info("API | PHONE_OTP | RESENT | phone={}", request.getPhone());
+                } else {
+                        return ResponseEntity.badRequest().body(Map.of("message", "Either email or phone is required"));
+                }
 
                 return ResponseEntity.ok(
                                 Map.of("message", "OTP resent successfully"));
@@ -203,6 +209,20 @@ public class AuthController {
 
                 return ResponseEntity.ok(
                                 Map.of("message", "Phone verified successfully"));
+        }
+
+        @PostMapping("/phone/resend-otp")
+        public ResponseEntity<?> resendPhoneOtp(
+                        @Valid @RequestBody SendPhoneOtpRequest request) {
+
+                log.info("API | PHONE_OTP | RESEND | phone={}", request.getPhone());
+
+                userService.sendPhoneOtp(request.getPhone());
+
+                log.info("API | PHONE_OTP | RESENT | phone={}", request.getPhone());
+
+                return ResponseEntity.ok(
+                                Map.of("message", "OTP resent to phone successfully"));
         }
 
         /* ================= TOKEN ================= */

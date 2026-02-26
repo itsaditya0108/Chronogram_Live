@@ -1,6 +1,7 @@
 package com.example.authapp.repository;
 
 import com.example.authapp.entity.User;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -21,18 +22,26 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     Optional<User> findByResetToken(String resetToken);
 
+
+
+    long countByStatus_Id(String id);
+
+
     @Query("""
-                SELECT u
-                FROM User u
-                WHERE (
-                    LOWER(u.name) LIKE CONCAT(:q, '%')
-                    OR u.phone LIKE CONCAT('%', :q, '%')
-                    OR LOWER(u.email) LIKE CONCAT(:q, '%')
-                )
-                AND u.status.id = '01'
-            """)
-    List<User> searchUsers(
+    SELECT u
+    FROM User u
+    WHERE (
+        LOWER(u.name) LIKE LOWER(CONCAT('%', :q, '%'))
+        OR u.phone LIKE CONCAT('%', :q, '%')
+        OR LOWER(u.email) LIKE LOWER(CONCAT('%', :q, '%'))
+    )
+    AND (:statusId IS NULL OR u.status.id = :statusId)
+""")
+    Page<User> searchUsers(
             @Param("q") String query,
-            Pageable pageable);
+            @Param("statusId") String statusId,
+            Pageable pageable
+    );
+
 
 }
