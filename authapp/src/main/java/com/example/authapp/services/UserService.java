@@ -91,8 +91,13 @@ public class UserService {
         UserStatus activeStatus = userStatusRepository.findById("01")
                 .orElseThrow(() -> new ApiException("STATUS_NOT_FOUND"));
 
+        if (request.getName() == null || request.getName().trim().isEmpty()
+                || !request.getName().trim().matches("^[a-zA-Z\\s]+$")) {
+            throw new ApiException("Invalid name format. Only letters and spaces are allowed.");
+        }
+
         User user = new User();
-        user.setName(request.getName());
+        user.setName(request.getName().trim());
         user.setEmail(request.getEmail());
         user.setPhone(normalizedPhone);
         user.setPasswordHash(passwordEncoder.encode(request.getPassword()));

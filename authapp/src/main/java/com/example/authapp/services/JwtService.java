@@ -35,58 +35,78 @@ public class JwtService {
                                 .compact();
         }
 
+        // Strict Base64Url pattern for JWT parts (no padding "=" allowed)
+        private static final java.util.regex.Pattern JWT_STRICT_PATTERN = java.util.regex.Pattern.compile(
+                        "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$");
+
+        private boolean isStrictlyFormattedJwt(String token) {
+                if (token == null || token.isEmpty()) {
+                        return false;
+                }
+                return JWT_STRICT_PATTERN.matcher(token).matches();
+        }
+
         public Long validateAndGetUserId(String token) {
-                Claims claims = Jwts.parserBuilder()
-                                .setSigningKey(Keys.hmacShaKeyFor(secret.getBytes()))
+                if (!isStrictlyFormattedJwt(token)) {
+                        throw new RuntimeException("Malformed JWT structure");
+                }
+
+                Claims claims = Jwts.parser()
+                                .verifyWith((javax.crypto.SecretKey) Keys.hmacShaKeyFor(secret.getBytes()))
                                 .build()
-                                .parseClaimsJws(token)
-                                .getBody();
+                                .parseSignedClaims(token)
+                                .getPayload();
 
                 return Long.parseLong(claims.getSubject());
         }
 
         public Long getSessionId(String token) {
-                Claims claims = Jwts.parserBuilder()
-                                .setSigningKey(Keys.hmacShaKeyFor(secret.getBytes()))
+                if (!isStrictlyFormattedJwt(token)) {
+                        throw new RuntimeException("Malformed JWT structure");
+                }
+
+                Claims claims = Jwts.parser()
+                                .verifyWith((javax.crypto.SecretKey) Keys.hmacShaKeyFor(secret.getBytes()))
                                 .build()
-                                .parseClaimsJws(token)
-                                .getBody();
+                                .parseSignedClaims(token)
+                                .getPayload();
 
                 return claims.get("sid", Long.class);
         }
 
-    public String generateAdminToken(Long adminId, String role) {
+        public String generateAdminToken(Long adminId, String role) {
 
-        return Jwts.builder()
-                .setSubject(String.valueOf(adminId))
-                .claim("type", "ADMIN")
-                .claim("role", role)
-                .setIssuedAt(new Date())
-                .setExpiration(new Date(System.currentTimeMillis() + 1000L * 60 * 60 * 12))
-                .signWith(Keys.hmacShaKeyFor(secret.getBytes()), SignatureAlgorithm.HS256)
-                .compact();
-    }
-
-
-    public Long validateAndGetAdminId(String token) {
-
-        Claims claims = Jwts.parserBuilder()
-                .setSigningKey(Keys.hmacShaKeyFor(secret.getBytes()))
-                .build()
-                .parseClaimsJws(token)
-                .getBody();
-
-        String type = claims.get("type", String.class);
-
-        if (!"ADMIN".equals(type)) {
-            throw new RuntimeException("Invalid admin token");
+                return Jwts.builder()
+                                .setSubject(String.valueOf(adminId))
+                                .claim("type", "ADMIN")
+                                .claim("role", role)
+                                .setIssuedAt(new Date())
+                                .setExpiration(new Date(System.currentTimeMillis() + 1000L * 60 * 60 * 12))
+                                .signWith(Keys.hmacShaKeyFor(secret.getBytes()), SignatureAlgorithm.HS256)
+                                .compact();
         }
 
-        return Long.parseLong(claims.getSubject());
-    }
+        public Long validateAndGetAdminId(String token) {
+                if (!isStrictlyFormattedJwt(token)) {
+                        throw new RuntimeException("Malformed JWT structure");
+                }
 
+                Claims claims = Jwts.parser()
+                                .verifyWith((javax.crypto.SecretKey) Keys.hmacShaKeyFor(secret.getBytes()))
+                                .build()
+                                .parseSignedClaims(token)
+                                .getPayload();
 
-    // This throws exception automatically if:
+                String type = claims.get("type", String.class);
+
+                if (!"ADMIN".equals(type)) {
+                        throw new RuntimeException("Invalid admin token");
+                }
+
+                return Long.parseLong(claims.getSubject());
+        }
+
+        // This throws exception automatically if:
         // token expired
         // token invalid
         // signature tampered
