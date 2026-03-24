@@ -5,6 +5,10 @@ import java.time.LocalDateTime;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
+/**
+ * Entity representing an Administrative User.
+ * Admins have elevated privileges to manage the platform and users.
+ */
 @Entity
 @Table(name = "admins")
 public class Admin {
@@ -20,25 +24,43 @@ public class Admin {
     @Column(nullable = false, unique = true)
     private String email;
 
+    /**
+     * BCRYPT hash of the admin's password.
+     */
     @Column(name = "password_hash", nullable = false)
     private String passwordHash;
 
+    /**
+     * Role determining fine-grained permissions (e.g., SUPER_ADMIN, MODERATOR).
+     */
     @Column(length = 30)
     private String role;
 
     @Column(name = "is_active")
     private Boolean isActive;
 
+    /**
+     * Counter for consecutive failed login attempts leading to admin lockout.
+     */
     @Column(name = "failed_login_attempts")
     private Integer failedLoginAttempts;
 
+    /**
+     * Timestamp until which the admin account is locked.
+     */
     @Column(name = "locked_until")
     private LocalDateTime lockedUntil;
 
+    /**
+     * Audit field: recorded when the admin record was created.
+     */
     @CreationTimestamp
     @Column(name = "created_timestamp", updatable = false)
     private LocalDateTime createdTimestamp;
 
+    /**
+     * Audit field: recorded when the admin record was last updated.
+     */
     @UpdateTimestamp
     @Column(name = "updated_timestamp")
     private LocalDateTime updatedTimestamp;

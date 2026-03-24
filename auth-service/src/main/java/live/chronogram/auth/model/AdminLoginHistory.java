@@ -4,6 +4,10 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 import org.hibernate.annotations.CreationTimestamp;
 
+/**
+ * Entity representing a historical record of an Admin Login Attempt.
+ * Tracks successful and failed logins for administrative accounts.
+ */
 @Entity
 @Table(name = "admin_login_history")
 public class AdminLoginHistory {
@@ -13,21 +17,33 @@ public class AdminLoginHistory {
     @Column(name = "admin_login_history_id")
     private Long adminLoginHistoryId;
 
+    /**
+     * The Admin who attempted the login.
+     */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "admin_id", nullable = false)
     private Admin admin;
 
+    /**
+     * IP address of the admin during the login attempt.
+     */
     @Column(name = "ip_address", length = 45)
     private String ipAddress;
 
     @Column(name = "user_agent", columnDefinition = "TEXT")
     private String userAgent;
 
+    /**
+     * Whether the login attempt was successful.
+     */
     private Boolean success;
 
     @Column(name = "failure_reason", length = 100)
     private String failureReason;
 
+    /**
+     * Audit field: recorded when the login attempt occurred.
+     */
     @CreationTimestamp
     @Column(name = "created_timestamp", updatable = false)
     private LocalDateTime createdTimestamp;

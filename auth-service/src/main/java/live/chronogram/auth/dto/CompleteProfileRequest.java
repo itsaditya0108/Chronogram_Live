@@ -1,16 +1,42 @@
 package live.chronogram.auth.dto;
 
+/**
+ * Data Transfer Object for the final step of registration: completing the user
+ * profile.
+ * Requires a valid registration token obtained from email verification.
+ */
 public class CompleteProfileRequest {
-    private String mobileNumber; // To identify the user
+    /**
+     * Mobile number provided during the first step of registration.
+     * Logic: Must match the number embedded in the RegistrationToken.
+     */
+    private String mobileNumber;
+
+    /**
+     * User's full legal name.
+     * Logic: Validated for alphabetic characters and spaces only.
+     */
     private String name;
-    private String dob; // Keep as String "YYYY-MM-DD" for simplicity
+
+    /**
+     * Birth date (YYYY-MM-DD).
+     * Logic: Stored to calculate age groups and for identity verification.
+     */
+    private String dob;
+
+    /**
+     * Cryptographic proof of verification.
+     * Logic: This token is issued after successful email OTP verification. 
+     * It contains the verified mobile and email, ensuring no data was tampered with between steps.
+     */
     private String registrationToken;
+
     private String country;
     private String city;
     private Double latitude;
     private Double longitude;
 
-    // Device Info
+    // Device identity to be associated with this new account profile
     private String deviceId;
     private String deviceName;
     private String deviceModel;

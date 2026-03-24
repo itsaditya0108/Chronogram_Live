@@ -7,17 +7,31 @@ import jakarta.persistence.Table;
 import java.time.LocalDateTime;
 import org.hibernate.annotations.CreationTimestamp;
 
+/**
+ * Entity representing a Lookup for User Account Statuses.
+ * Mapping of 2-letter codes (e.g., 'AC') to descriptive names (e.g., 'ACTIVE').
+ */
 @Entity
 @Table(name = "user_status")
 public class UserStatus {
 
+    /**
+     * Unique 2-letter identifier for the status (e.g., AC=ACTIVE, SU=SUSPENDED,
+     * BA=BANNED).
+     */
     @Id
-    @Column(name = "user_status_id", length = 2)
-    private String userStatusId; // e.g., AC, SU, BA
+    @Column(name = "user_status_id", length = 10)
+    private String userStatusId;
 
+    /**
+     * Human-readable name of the status.
+     */
     @Column(nullable = false, length = 50)
     private String name;
 
+    /**
+     * Audit field: recorded when the status entry was first created.
+     */
     @CreationTimestamp
     @Column(name = "created_timestamp", updatable = false)
     private LocalDateTime createdTimestamp;

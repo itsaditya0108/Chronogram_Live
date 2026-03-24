@@ -9,6 +9,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+/**
+ * Service for managing user devices and their trust status.
+ * Handles device registration, metadata updates, and security checks for
+ * trusted devices.
+ */
 @Service
 public class DeviceService {
 
@@ -16,18 +21,15 @@ public class DeviceService {
     private UserDeviceRepository userDeviceRepository;
 
     /**
-     * Registers a new device for a user, or updates an existing device's metadata
-     * (such as last login, app version, OS version, or location).
+     * Registers a new device or updates an existing one for a user.
+     * Captures device metadata like OS version, model, and location for security
+     * auditing.
      * 
      * @param user        The User entity.
-     * @param deviceId    The unique hardware/software identifier for the device.
-     * @param simSerial   The hashed SIM serial (important for telecom/fintech
-     *                    strict binding).
-     * @param pushToken   The FCM or APNs token for push notifications.
-     * @param trustDevice Whether this device has successfully passed all
-     *                    verification hurdles
-     *                    and should be considered "trusted" for future logins
-     *                    without strict OTPs.
+     * @param deviceId    The unique identifier for the device.
+     * @param simSerial   The SIM serial hash (for telecom binding).
+     * @param pushToken   The token for push notifications (FCM/APN).
+     * @param trustDevice Whether to mark this device as "trusted".
      * @return The saved UserDevice entity.
      */
     @Transactional
@@ -36,18 +38,20 @@ public class DeviceService {
             String osName, String osVersion, String appVersion,
             Double latitude, Double longitude, String country, String city, boolean trustDevice) {
 
+        // 1. Mandatory Identifier Check
         if (deviceId == null || deviceId.trim().isEmpty()) {
             throw new RuntimeException("Device ID is required.");
         }
 
+        // 2. Identity Lookup: Check if this device is already known for this user
         Optional<UserDevice> existingDeviceOpt = userDeviceRepository.findByUser_UserIdAndDeviceId(user.getUserId(),
                 deviceId);
 
         UserDevice device;
         if (existingDeviceOpt.isPresent()) {
+            // Case A: UPDATE existing device metadata
             device = existingDeviceOpt.get();
             device.setLastLoginTimestamp(LocalDateTime.now());
-            // Update metadata
             device.setDeviceName(deviceName);
             device.setDeviceModel(deviceModel);
             device.setOsName(osName);
@@ -57,7 +61,8 @@ public class DeviceService {
             device.setLongitude(longitude);
             device.setCountry(country);
             device.setCity(city);
-            // Update Push Token
+
+            // Conditional Updates: Only update push token/sim serial if provided (to avoid clearing valid data)
             if (pushToken != null && !pushToken.isEmpty()) {
                 device.setPushToken(pushToken);
             }
@@ -65,13 +70,14 @@ public class DeviceService {
                 device.setIsTrusted(true);
             }
             if (simSerial != null && !simSerial.isEmpty()) {
-                device.setSimSerialHash(simSerial); // In real world, hash this!
+                device.setSimSerialHash(simSerial);
             }
         } else {
+            // Case B: REGISTER new device entry
             device = new UserDevice();
             device.setUser(user);
             device.setDeviceId(deviceId);
-            device.setSimSerialHash(simSerial); // In real world, hash this!
+            device.setSimSerialHash(simSerial);
             device.setPushToken(pushToken);
             device.setDeviceName(deviceName);
             device.setDeviceModel(deviceModel);
@@ -87,12 +93,15 @@ public class DeviceService {
             device.setCity(city);
         }
 
+        // 3. Persist the updated/new device record
         return userDeviceRepository.save(device);
     }
 
     /**
      * Checks if a specific device ID is marked as trusted for a given user.
-     * Trusted devices often bypass secondary 2FA prompts in subsequent logins.
+     * Trusted devices bypass secondary OTP layers in many flows.
+     * 
+     * @return true if trusted, false if unrecognized or explicitly untrusted.
      */
     public boolean isDeviceTrusted(User user, String deviceId) {
         return userDeviceRepository.findByUser_UserIdAndDeviceId(user.getUserId(), deviceId)
@@ -101,10 +110,7 @@ public class DeviceService {
     }
 
     /**
-     * Checks if the user has *any* trusted device. Useful for determining if a
-     * login
-     * is occurring on a "First Device" vs a "Secondary Device" (which triggers
-     * security alerts).
+     * Checks if a user has at least one trusted device registered.
      */
     public boolean hasAnyTrustedDevice(Long userId) {
         return userDeviceRepository.findByUser_UserId(userId).stream()

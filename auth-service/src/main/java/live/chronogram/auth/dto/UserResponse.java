@@ -1,24 +1,39 @@
 package live.chronogram.auth.dto;
 
+/**
+ * Data Transfer Object representing a User's public/profile information.
+ * Typically returned after successful login or profile retrieval.
+ */
 public class UserResponse {
-    private Long userId;
-    private String name;
-    private String email;
-    private String mobileNumber;
-    private String dob;
-    private String profilePictureUrl;
+    private Long userId;       // Internal database ID
+    private String name;       // Full name
+    /**
+     * Masked Email (e.g., "a***a@example.com").
+     * Logic: Masked in AuthService.getUserDetails() for PII protection.
+     */
+    private String email;      
+    /**
+     * Masked Mobile (e.g., "******1234").
+     * Logic: Masked in AuthService.getUserDetails() for PII protection.
+     */
+    private String mobileNumber; 
+    private String dob;        // Birthdate
+
     private boolean isMobileVerified;
     private boolean isEmailVerified;
+    /**
+     * Current account status.
+     * Logic: Controlled by UserStatus entity.
+     */
     private String status;
 
     public UserResponse(Long userId, String name, String email, String mobileNumber, String dob,
-            String profilePictureUrl, boolean isMobileVerified, boolean isEmailVerified, String status) {
+            boolean isMobileVerified, boolean isEmailVerified, String status) {
         this.userId = userId;
         this.name = name;
         this.email = email;
         this.mobileNumber = mobileNumber;
         this.dob = dob;
-        this.profilePictureUrl = profilePictureUrl;
         this.isMobileVerified = isMobileVerified;
         this.isEmailVerified = isEmailVerified;
         this.status = status;
@@ -45,9 +60,6 @@ public class UserResponse {
         return dob;
     }
 
-    public String getProfilePictureUrl() {
-        return profilePictureUrl;
-    }
 
     public boolean isMobileVerified() {
         return isMobileVerified;
@@ -82,9 +94,6 @@ public class UserResponse {
         this.dob = dob;
     }
 
-    public void setProfilePictureUrl(String profilePictureUrl) {
-        this.profilePictureUrl = profilePictureUrl;
-    }
 
     public void setMobileVerified(boolean mobileVerified) {
         isMobileVerified = mobileVerified;

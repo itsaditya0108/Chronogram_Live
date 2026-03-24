@@ -4,24 +4,30 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import live.chronogram.auth.enums.OtpType;
-import live.chronogram.auth.model.User;
-import live.chronogram.auth.model.UserDevice;
-import live.chronogram.auth.model.UserSession;
-import live.chronogram.auth.model.UserStatus;
-import live.chronogram.auth.repository.UserDeviceRepository;
-import live.chronogram.auth.repository.UserRepository;
-import live.chronogram.auth.repository.UserSessionRepository;
-import live.chronogram.auth.repository.UserStatusRepository;
+import live.chronogram.auth.model.*;
+import live.chronogram.auth.dto.*;
+import live.chronogram.auth.repository.*;
+import live.chronogram.auth.exception.AuthException;
 import live.chronogram.auth.security.JwtTokenProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import org.slf4j.MDC;
 
+/**
+ * Core business logic for authentication, user management, and session
+ * handling.
+ * Orchestrates OTP services, device trust, and JWT token generation.
+ */
 @Service
 public class AuthService {
 
     private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(AuthService.class);
+    private static final org.slf4j.Logger flowLogger = org.slf4j.LoggerFactory.getLogger("live.chronogram.auth.ms");
 
     @Autowired
     private UserRepository userRepository;
@@ -50,8 +56,53 @@ public class AuthService {
     @Autowired
     private JwtTokenProvider jwtTokenProvider;
 
+    @Autowired
+    private live.chronogram.auth.repository.OtpVerificationRepository otpVerificationRepository;
+
+    @Autowired
+    private IncompleteRegistrationRepository incompleteRegistrationRepository;
+
+    @Autowired
+    private FirebaseAuthService firebaseAuthService;
+
+    @Autowired
+    private RestTemplate restTemplate;
+
+    @Autowired
+    private RegistrationProgressRepository registrationProgressRepository;
+
+    @Autowired
+    private StorageUsageRepository storageUsageRepository;
+
+    @Autowired
+    private SyncStatusRepository syncStatusRepository;
+
     @Value("${app.jwt.refresh-token-validity-ms}")
     private long refreshTokenValidityInMs;
+
+    /**
+     * Hashes a refresh token using SHA-256 before storing it in the database.
+     * 
+     * @param token The raw refresh token string.
+     * @return The hex-encoded SHA-256 hash.
+     */
+    private String hashRefreshToken(String token) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(token.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder(2 * hash.length);
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) {
+                    hexString.append('0');
+                }
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (Exception e) {
+            throw new RuntimeException("Could not hash token", e);
+        }
+    }
 
     /**
      * Sends an OTP to the given mobile number for login or registration.
@@ -63,28 +114,224 @@ public class AuthService {
      * @throws AuthException If user exists during registration, or not found during
      *                       login.
      */
-    @Transactional
-    public String sendOtp(String mobileNumber, boolean isLoginAttempt) {
+    @Transactional(noRollbackFor = AuthException.class)
+    public String[] sendOtp(live.chronogram.auth.dto.OtpRequest request, boolean isLoginAttempt) {
+        String mobileNumber = request.getMobileNumber();
+        String deviceId = request.getDeviceId();
+        // 1. Normalize the phone number format (remove non-digits, add country code if missing)
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
 
+        // 2. Check if the user already exists in the database
         Optional<User> userOpt = userRepository.findByMobileNumber(sanitizedMobile);
+        
         if (isLoginAttempt) {
+            // LOGIN FLOW: User must already exist
             if (userOpt.isEmpty()) {
-                throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.NOT_FOUND,
+                throw new AuthException(HttpStatus.NOT_FOUND,
                         "User not found. Please register.");
             }
-            if (!"AC".equals(userOpt.get().getUserStatus().getUserStatusId())) {
-                throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.FORBIDDEN,
-                        "Account is " + userOpt.get().getUserStatus().getName() + ". Cannot send OTP.");
+            
+            User user = userOpt.get();
+
+            // Check if the user is marked as deleted
+            if (Boolean.TRUE.equals(user.getIsDeleted())) {
+                throw new AuthException(HttpStatus.GONE,
+                        "This account has been deleted. Please contact support if this is an error.");
+            }
+
+            // Verify if the profile is complete (must have name and email)
+            if (user.getEmail() == null || user.getName() == null) {
+                throw new AuthException(HttpStatus.FORBIDDEN,
+                        "Registration incomplete. Please register again.");
+            }
+            
+            // Check if the account status allows login (Active or Banned/Locked temporarily)
+            // If status is null (legacy/bug), treat as "ACTIVE" by default
+            if (user.getUserStatus() == null) {
+                userStatusRepository.findById("NEW").ifPresent(status -> {
+                    user.setUserStatus(status);
+                    userRepository.save(user);
+                    logger.info("Auto-initialized null status to NEW for user: {}", user.getUserId());
+                });
+            }
+
+            // Check Admin Approval Status (Blocking)
+            if (!"APPROVED".equals(user.getApprovalStatus())) {
+                throw new AuthException(HttpStatus.FORBIDDEN, 
+                        "Wait for admin approval your profile created");
+            }
+
+            String statusId = user.getUserStatus() != null ? user.getUserStatus().getUserStatusId() : "ACTIVE";
+            if (!"ACTIVE".equals(statusId) && !"BLOCK".equals(statusId)) {
+                String statusName = user.getUserStatus() != null ? user.getUserStatus().getName() : "Unknown";
+                throw new AuthException(HttpStatus.FORBIDDEN,
+                        "Account is " + statusName + ". Cannot send OTP.");
+            }
+            
+            // Enforcement of temporary lockouts (e.g., due to too many failed attempts)
+            if (user.getLockedUntil() != null) {
+                if (user.getLockedUntil().isAfter(LocalDateTime.now())) {
+                    long minutesLeft = java.time.Duration.between(LocalDateTime.now(), user.getLockedUntil())
+                            .toMinutes();
+                    if (minutesLeft == 0)
+                        minutesLeft = 1;
+                    throw new AuthException(
+                            HttpStatus.TOO_MANY_REQUESTS,
+                            "Your account is temporarily locked. Please try again after "
+                                     + minutesLeft + " minute(s).");
+                } else {
+                    // If the lockout time has passed, clear it automatically
+                    user.setLockedUntil(null);
+                    userRepository.save(user);
+                }
             }
         } else {
+            // REGISTRATION FLOW: User should NOT exist fully
             if (userOpt.isPresent()) {
-                throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.CONFLICT,
-                        "User already registered. Please login.");
+                User user = userOpt.get();
+                // If the user started registration but didn't finish, allow them to restart
+                if (user.getEmail() == null || user.getName() == null) {
+                    logger.info("Allowing incomplete user to restart registration: {}", sanitizedMobile);
+                } else {
+                    // Fully registered users should use the Login flow instead
+                    throw new AuthException(HttpStatus.CONFLICT,
+                            "User already registered please login");
+                }
             }
+            
+            // Track incomplete registration with device ID and metadata
+            saveIncompleteRegistration(sanitizedMobile, "OTP_SENT", null, null, 
+                deviceId, request.getDeviceName(), request.getDeviceModel(), 
+                request.getOsName(), request.getOsVersion(), request.getIpAddress(),
+                request.getLatitude(), request.getLongitude(), request.getCity(), request.getCountry());
         }
 
-        return otpService.generateOtp(sanitizedMobile, OtpType.MOBILE_LOGIN);
+        // 3. skipSms flag: When Firebase handles SMS delivery on the client side,
+        // the caller sets skipSms=true to suppress the OTP echo and skip MySQL storage.
+        boolean skipSms = Boolean.TRUE.equals(request.getSkipSms());
+        
+        String otpCode;
+        String sessionId;
+
+        if (skipSms) {
+            // Case: Firebase handles SMS. We skip MySQL generation entirely to avoid conflicts (double OTP/rate limits).
+            // We still generate a random sessionId for the JWT token to maintain session structure.
+            otpCode = "";
+            sessionId = java.util.UUID.randomUUID().toString();
+            logger.info("Firebase flow detected (skipSms=true). Skipping MySQL OTP generation for: {}", sanitizedMobile);
+        } else {
+            // Case: Standard flow. Backend generates and stores OTP in MySQL.
+            String[] otpResponse = generateOtpWithLockout(sanitizedMobile, OtpType.MOBILE_LOGIN, userOpt);
+            otpCode = otpResponse[0];
+            sessionId = otpResponse[1];
+        }
+        
+        // 4. Create a short-lived JWT that binds the phone number, deviceId, and sessionId together
+        // This token must be sent back in the 'verify-otp' step to prove session continuity.
+        String sessionToken = jwtTokenProvider.createOtpSessionToken(sanitizedMobile, deviceId, sessionId);
+
+        updateRegistrationProgressForNewUser(sanitizedMobile, "OTP_SENT");
+        return new String[] { otpCode, sessionToken };
+    }
+
+    private void updateRegistrationProgressForNewUser(String mobile, String step) {
+        userRepository.findByMobileNumber(mobile).ifPresent(user -> {
+            updateRegistrationProgress(user.getUserId(), step);
+            user.setRegistrationStatus(step);
+            userRepository.save(user);
+        });
+    }
+
+    /**
+     * Resends an OTP to the given mobile number for login or registration.
+     * Unlike {@link #sendOtp}, this bypasses the "active OTP still exists" spam
+     * check so a new OTP is always sent immediately when the user requests resend.
+     *
+     * @param mobileNumber   The user's mobile number.
+     * @param isLoginAttempt True if resending for login, false for registration.
+     * @param deviceId       The caller's device ID (for session token binding).
+     * @return Array of [otpCode, otpSessionToken].
+     */
+    /**
+     * Entry point for resending OTP.
+     * Non-transactional to avoid holding connections while locked or performing basic validation.
+     * 
+     * @param mobileNumber The sanitized or raw mobile number.
+     * @param isLoginAttempt True if this is for an existing user login.
+     * @param deviceId The ID of the device requesting the resend.
+     * @return Array of [otpCode, otpSessionToken].
+     */
+    public String[] resendOtp(String mobileNumber, boolean isLoginAttempt, String deviceId) {
+        // 1. Normalize the mobile number (No DB needed)
+        String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
+
+        // 2. Identify the user and perform initial state checks (Transactional)
+        Optional<User> userOpt = findAndValidateUserForResend(sanitizedMobile, isLoginAttempt);
+
+        // 3. Generate a NEW OTP code (Synchronization handled inside OtpService)
+        String[] otpResponse = generateOtpWithLockout(sanitizedMobile, OtpType.MOBILE_LOGIN, userOpt, true);
+        String otpCode = otpResponse[0];
+        String sessionId = otpResponse[1];
+        
+        // 4. Issue the session token binding the mobile and device
+        String sessionToken = jwtTokenProvider.createOtpSessionToken(sanitizedMobile, deviceId, sessionId);
+
+        return new String[] { otpCode, sessionToken };
+    }
+
+    /**
+     * Transactional worker for user validation.
+     */
+    @Transactional
+    protected Optional<User> findAndValidateUserForResend(String sanitizedMobile, boolean isLoginAttempt) {
+        // 2. Identify the user
+        Optional<User> userOpt = userRepository.findByMobileNumber(sanitizedMobile);
+        if (isLoginAttempt) {
+            // LOGIN RESEND: User must exist
+            if (userOpt.isEmpty()) {
+                throw new AuthException(HttpStatus.NOT_FOUND,
+                        "User not found. Please register.");
+            }
+            User user = userOpt.get();
+            // Verify profile completeness
+            if (user.getEmail() == null || user.getName() == null) {
+                throw new AuthException(HttpStatus.FORBIDDEN,
+                        "Registration incomplete. Please register again.");
+            }
+            // Verify account status
+            String statusId = user.getUserStatus() != null ? user.getUserStatus().getUserStatusId() : "ACTIVE";
+            if (!"ACTIVE".equals(statusId) && !"BLOCK".equals(statusId)) {
+                String statusName = user.getUserStatus() != null ? user.getUserStatus().getName() : "Unknown";
+                throw new AuthException(HttpStatus.FORBIDDEN,
+                        "Account is " + statusName + ". Cannot resend OTP.");
+            }
+            // Handle logical lockouts
+            if (user.getLockedUntil() != null) {
+                if (user.getLockedUntil().isAfter(LocalDateTime.now())) {
+                    long minutesLeft = java.time.Duration.between(LocalDateTime.now(), user.getLockedUntil())
+                            .toMinutes();
+                    if (minutesLeft == 0)
+                            minutesLeft = 1;
+                    throw new AuthException(
+                            HttpStatus.TOO_MANY_REQUESTS,
+                            "Your account is temporarily locked. Please try again after " + minutesLeft + " minute(s).");
+                } else {
+                    // Lock expired, reset it
+                    user.setLockedUntil(null);
+                    userRepository.save(user);
+                }
+            }
+        } else {
+            // REGISTRATION RESEND: User should not already be fully registered
+            if (userOpt.isPresent()) {
+                User user = userOpt.get();
+                if (user.getEmail() != null && user.getName() != null) {
+                    throw new AuthException(HttpStatus.CONFLICT,
+                            "User already registered please login");
+                }
+            }
+        }
+        return userOpt;
     }
 
     /**
@@ -96,28 +343,31 @@ public class AuthService {
      * @return The generated OTP string sent to the email.
      * @throws RuntimeException If user or email is not found.
      */
-    @Transactional
+    @Transactional(noRollbackFor = AuthException.class)
     public String sendEmailOtp(String mobileNumber) {
-        // Check if there is a pending registration
-        // NOTE: This method is primarily for Recovery or linking where User exists.
-        // For new registration, we use the overloaded method or handle inside logic if
-        // needed.
-        // But the controller typically calls this with just mobileNumber for recovery?
-        // Actually, for stateless registration, the frontend might not provide
-        // mobileNumber directly
-        // if they only have a token, OR they provide mobileNumber + RegistrationToken.
-
-        // if they only have a token, OR they provide mobileNumber + RegistrationToken.
-
+        // 1. Sanitize the mobile number input
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
+        
+        // 2. Fetch the user. Throws exception if user doesn't exist (expected for recovery/linking).
         User user = userRepository.findByMobileNumber(sanitizedMobile)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        if (user.getEmail() == null || user.getEmail().isEmpty()) {
-            throw new RuntimeException("No email registered for this user.");
+        // 3. Security Check: Is the account locked?
+        if (user.getLockedUntil() != null && user.getLockedUntil().isAfter(LocalDateTime.now())) {
+            long minutesLeft = java.time.Duration.between(LocalDateTime.now(), user.getLockedUntil())
+                    .toMinutes();
+            if (minutesLeft == 0)
+                minutesLeft = 1;
+            throw new AuthException(
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "Account locked. Please try again after " + minutesLeft + " minute(s).");
         }
 
-        return otpService.generateOtp(user.getEmail(), OtpType.EMAIL_VERIFICATION);
+        // 4. Generate the Email OTP using the user's primary registered email
+        String[] otpResponse = generateOtpWithLockout(user.getEmail(), OtpType.EMAIL_VERIFICATION, Optional.of(user));
+        
+        // Return only the code (sending should be handled via email logic elsewhere)
+        return otpResponse[0];
     }
 
     /**
@@ -131,37 +381,70 @@ public class AuthService {
      * @throws RuntimeException If token is missing, step is invalid, or email is in
      *                          use.
      */
-    @Transactional
-    public String sendEmailOtp(String email, String registrationToken) {
+    /**
+     * Sends an Email OTP for a new registration flow stateless step, identified by
+     * token.
+     * 
+     * @param email             The email address to verify.
+     * @param registrationToken The JWT token carrying the current registration
+     *                          state/step.
+     * @return An array containing [otpCode, newToken].
+     * @throws RuntimeException If token is missing, step is invalid, or email is in
+     *                          use.
+     */
+    @Transactional(noRollbackFor = AuthException.class)
+    public String[] sendEmailOtp(String email, String registrationToken) {
+        // 1. Validation: registrationToken is mandatory for stateless registration
         if (registrationToken == null || registrationToken.isEmpty()) {
             throw new RuntimeException("Registration token required for new users.");
         }
 
+        // 2. Decode claims from the token to verify the current step
         io.jsonwebtoken.Claims claims = jwtTokenProvider.getClaimsFromRegistrationToken(registrationToken);
         String currentStep = (String) claims.get("step");
 
+        // Only allow email OTP generation if previous step (mobile verification) was successful
         if (!"EMAIL_REQUIRED".equals(currentStep)) {
             throw new RuntimeException("Invalid registration step. Cannot send email OTP.");
         }
 
+        // 3. Validate email format
         String formattedEmail = validateAndFormatEmail(email);
 
-        // Ensure email is not already taken
+        // 4. Ensure the email isn't already used by another account
         if (userRepository.findByEmail(formattedEmail).isPresent()) {
             throw new RuntimeException("Email already in use.");
         }
 
-        // Generate OTP for the provided email (stateless, associated with email
-        // address)
-        return otpService.generateOtp(formattedEmail, OtpType.EMAIL_VERIFICATION);
+        // 5. Generate the OTP record for this email
+        String[] otpResponse = otpService.generateOtp(formattedEmail,
+                live.chronogram.auth.enums.OtpType.EMAIL_VERIFICATION);
+        String otp = otpResponse[0];
+        String sessionId = otpResponse[1];
+
+        // 6. Issue a new Registration Token that now includes the 'email' claim
+        // This ensures the next step (Complete Profile) can trust that THIS email was verified.
+        String mobileNumber = claims.getSubject();
+        String token = jwtTokenProvider.createRegistrationToken(mobileNumber, formattedEmail, "EMAIL_REQUIRED",
+                sessionId);
+
+        return new String[] { otp, token };
     }
 
-    @Transactional
-    public String resendNewDeviceOtp(String temporaryToken) {
+    /**
+     * Resends the new device verification OTP to the user's email.
+     * 
+     * @param temporaryToken The temporary JWT token carrying user context.
+     * @return The newly generated OTP code.
+     */
+    @Transactional(noRollbackFor = AuthException.class)
+    public String[] resendNewDeviceOtp(String temporaryToken) {
+        // 1. Validation: temporaryToken is required for context
         if (temporaryToken == null || temporaryToken.isEmpty()) {
             throw new RuntimeException("Temporary token is required for resend.");
         }
 
+        // 2. Extract claims and verify the step matches NEW_DEVICE_VERIFICATION
         io.jsonwebtoken.Claims claims = jwtTokenProvider.getClaimsFromRegistrationToken(temporaryToken);
         String step = (String) claims.get("step");
         if (!"DEVICE_APPROVAL_REQUIRED".equals(step)) {
@@ -169,11 +452,46 @@ public class AuthService {
         }
 
         String email = (String) claims.get("email");
+        String sessionTokenId = (String) claims.get("sessionId");
 
+        // 3. Verify OTP Session continuity
+        live.chronogram.auth.model.OtpVerification existingOtp = otpVerificationRepository
+                .findFirstByTargetAndOtpTypeOrderByCreatedTimestampDesc(email,
+                        live.chronogram.auth.enums.OtpType.NEW_DEVICE_VERIFICATION)
+                .orElse(null); 
+
+        if (existingOtp != null && sessionTokenId != null && !sessionTokenId.equals(existingOtp.getSessionId())) {
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "INVALID_OTP_SESSION: The temporary token does not match the current OTP attempt.");
+        }
+
+        // 4. Fetch the user associated with this email
         User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new RuntimeException("User found in token but not in database"));
 
-        return otpService.generateOtp(user.getEmail(), OtpType.NEW_DEVICE_VERIFICATION);
+        // 5. Account Lockout check
+        if (user.getLockedUntil() != null && user.getLockedUntil().isAfter(LocalDateTime.now())) {
+            long minutesLeft = java.time.Duration.between(LocalDateTime.now(), user.getLockedUntil())
+                    .toMinutes();
+            if (minutesLeft == 0)
+                minutesLeft = 1;
+            throw new AuthException(
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "Account locked. Please try again after " + minutesLeft + " minute(s).");
+        }
+
+        // 6. Generate a NEW OTP with lockout/resend tracking
+        String[] otpResponse = generateOtpWithLockout(user.getEmail(), OtpType.NEW_DEVICE_VERIFICATION,
+                Optional.of(user), true);
+        String newOtp = otpResponse[0];
+        String newSessionId = otpResponse[1];
+
+        // 7. Re-issue a temporary token bound to the NEW session ID
+        String mobileNumber = user.getMobileNumber();
+        String newToken = jwtTokenProvider.createRegistrationToken(mobileNumber, user.getEmail(),
+                "DEVICE_APPROVAL_REQUIRED", newSessionId);
+
+        return new String[] { newOtp, newToken };
     }
 
     /**
@@ -182,13 +500,15 @@ public class AuthService {
      * @param email The target email.
      * @return The generated OTP string.
      */
-    @Transactional
+    @Transactional(noRollbackFor = AuthException.class)
     public String resendEmailOtpByEmail(String email) {
         String formattedEmail = validateAndFormatEmail(email);
         User user = userRepository.findByEmail(formattedEmail)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        return otpService.generateOtp(user.getEmail(), OtpType.EMAIL_VERIFICATION);
+        String[] otpResponse = generateOtpWithLockout(user.getEmail(), OtpType.EMAIL_VERIFICATION, Optional.of(user),
+                true);
+        return otpResponse[0];
     }
 
     /**
@@ -196,25 +516,41 @@ public class AuthService {
      * Prevents operations if the user is already found in the system.
      * Delegates to the core @Transactional verifyOtpAndLogin.
      */
-    public String verifyOtpForRegistration(String mobileNumber, String otpCode, String emailOtpCode,
+    @Transactional(noRollbackFor = AuthException.class)
+    public TokenResponse verifyOtpForRegistration(String mobileNumber, String otpCode, String otpSessionToken,
+            String emailOtpCode,
             String deviceId, String simSerial, String pushToken,
             String deviceName, String deviceModel, String osName, String osVersion, String appVersion,
             Double latitude, Double longitude, String country, String city, String ipAddress, String userAgent) {
 
+        // 1. Sanitize the input mobile number
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
         logger.info("Verifying registration OTP for mobile: {}", sanitizedMobile);
 
-        if (userRepository.findByMobileNumber(sanitizedMobile).isPresent()) {
-            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.CONFLICT,
-                    "User already exists. Please login.");
+        // 2. Check if the user is already fully registered
+        Optional<User> existingUserOpt = userRepository.findByMobileNumber(sanitizedMobile);
+        if (existingUserOpt.isPresent()) {
+            User existingUser = existingUserOpt.get();
+            // If they have a name and email, they are already registered and should use Login
+            if (existingUser.getEmail() != null && existingUser.getName() != null) {
+                throw new AuthException(HttpStatus.CONFLICT,
+                        "User already exists. Please login.");
+            } else {
+                // If the profile is incomplete, we allow them to continue the registration flow
+                logger.info("Allowing incomplete user to verify registration OTP: {}", sanitizedMobile);
+            }
         }
 
-        // Call the core logic (which is @Transactional)
-        // This will CREATE the user and COMMIT the transaction when it returns.
-        // For NEW USER, verifyOtpAndLogin returns a RegistrationToken.
-        return verifyOtpAndLogin(sanitizedMobile, otpCode, emailOtpCode, false, deviceId, simSerial, pushToken,
+        // 3. Delegate to the core logic. 
+        TokenResponse response = verifyOtpAndLogin(sanitizedMobile, otpCode, otpSessionToken, emailOtpCode, false, deviceId, simSerial,
+                pushToken,
                 deviceName, deviceModel, osName, osVersion, appVersion, latitude, longitude, country, city, ipAddress,
                 userAgent);
+        
+        // Track progress: Step 2 (Mobile OTP verified)
+        updateRegistrationProgressForNewUser(sanitizedMobile, "OTP_VERIFIED");
+        
+        return response;
     }
 
     /**
@@ -222,21 +558,27 @@ public class AuthService {
      * Stops operation if the user is not found.
      * Delegates to the core @Transactional verifyOtpAndLogin.
      */
-    @Transactional(noRollbackFor = live.chronogram.auth.exception.AuthException.class)
-    public String verifyOtpForLogin(String mobileNumber, String otpCode, String emailOtpCode, boolean isRecoveryFlow,
+    @Transactional(noRollbackFor = AuthException.class)
+    public TokenResponse verifyOtpForLogin(String mobileNumber, String otpCode, String otpSessionToken,
+            String emailOtpCode,
+            boolean isRecoveryFlow,
             String deviceId, String simSerial, String pushToken,
             String deviceName, String deviceModel, String osName, String osVersion, String appVersion,
             Double latitude, Double longitude, String country, String city, String ipAddress, String userAgent) {
 
+        // 1. Sanitize the input mobile number
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
         logger.info("Verifying login OTP for mobile: {}", sanitizedMobile);
 
+        // 2. Security Check: User MUST exist for the login flow
         if (userRepository.findByMobileNumber(sanitizedMobile).isEmpty()) {
-            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.NOT_FOUND,
+            throw new AuthException(HttpStatus.NOT_FOUND,
                     "User not found. Please register.");
         }
 
-        return verifyOtpAndLogin(mobileNumber, otpCode, emailOtpCode, isRecoveryFlow, deviceId, simSerial, pushToken,
+        // 3. Delegate to the core logic
+        return verifyOtpAndLogin(sanitizedMobile, otpCode, otpSessionToken, emailOtpCode, isRecoveryFlow, deviceId,
+                simSerial, pushToken,
                 deviceName, deviceModel, osName, osVersion, appVersion, latitude, longitude, country, city, ipAddress,
                 userAgent);
     }
@@ -255,44 +597,91 @@ public class AuthService {
      * @return Either a valid Access Token for logged-in users, or a Registration
      *         Token for the next flow step.
      */
-    @Transactional(noRollbackFor = live.chronogram.auth.exception.AuthException.class)
-    public String verifyOtpAndLogin(String mobileNumber, String otpCode, String emailOtpCode, boolean isRecoveryFlow,
+    @Transactional(noRollbackFor = AuthException.class)
+    public TokenResponse verifyOtpAndLogin(String mobileNumber, String otpCode, String otpSessionToken,
+            String emailOtpCode,
+            boolean isRecoveryFlow,
             String deviceId, String simSerial, String pushToken,
             String deviceName, String deviceModel, String osName, String osVersion, String appVersion,
             Double latitude, Double longitude, String country, String city, String ipAddress, String userAgent) {
 
+        // 1. Validate mandatory Device ID
         if (deviceId == null || deviceId.trim().isEmpty()) {
-            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+            throw new AuthException(HttpStatus.BAD_REQUEST,
                     "DEVICE_ID_REQUIRED: deviceId is required.");
         }
+        final String finalDeviceId = deviceId.trim();
+
+        // 2. Validate mandatory OTP Session Token (continuity proof)
+        if (otpSessionToken == null || otpSessionToken.trim().isEmpty()) {
+            throw new AuthException(HttpStatus.BAD_REQUEST,
+                    "OTP_SESSION_TOKEN_REQUIRED: The OtpSessionToken from the send-otp step is missing.");
+        }
+
+        // Parse claims from the OTP session token
+        io.jsonwebtoken.Claims sessionClaims = jwtTokenProvider.getClaimsFromOtpSessionToken(otpSessionToken);
+        String sessionMobile = sessionClaims.getSubject();
+        String sessionDeviceId = (String) sessionClaims.get("deviceId");
 
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
-        logger.debug("Core verifyOtpAndLogin for mobile: {}", sanitizedMobile);
 
-        // 1. Verify Mobile OTP (Always required)
+        // Security Validation: Ensure the phone and device match what was used when requesting the OTP
+        if (!sanitizedMobile.equals(sessionMobile)) {
+            throw new AuthException(HttpStatus.FORBIDDEN,
+                    "OTP session mismatch: This token belongs to a different mobile number or has expired. Please request a new OTP.");
+        }
+        if (!deviceId.equals(sessionDeviceId)) {
+            throw new AuthException(HttpStatus.FORBIDDEN,
+                    "Cross-device OTP verification attempt detected and blocked.");
+        }
+
+        String sessionTokenId = (String) sessionClaims.get("sessionId");
+
+        // 3. Locate the Mobile OTP record in the database
+        live.chronogram.auth.model.OtpVerification mobileOtp = otpVerificationRepository
+                .findFirstByTargetAndOtpTypeOrderByCreatedTimestampDesc(sanitizedMobile,
+                        live.chronogram.auth.enums.OtpType.MOBILE_LOGIN)
+                .orElseThrow(() -> new AuthException(
+                        HttpStatus.BAD_REQUEST,
+                        "OTP not found or expired. Please request a new one."));
+
+        // Validate that the session ID matches (prevents token reuse after a new OTP is sent)
+        if (sessionTokenId == null || !sessionTokenId.equals(mobileOtp.getSessionId())) {
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "Invalid session: The session token has expired or been replaced. Please request a new OTP.");
+        }
+
+        // 4. Verify the actual OTP code via OtpService
         boolean isMobileVerified = false;
         try {
             isMobileVerified = otpService.verifyOtp(sanitizedMobile, OtpType.MOBILE_LOGIN, otpCode);
-        } catch (live.chronogram.auth.exception.AuthException e) {
-            // Only catch if it's the TOO_MANY_REQUESTS exception thrown by OtpService
-            if (e.getStatus() == org.springframework.http.HttpStatus.TOO_MANY_REQUESTS) {
-                // If Max Attempts Exceeded, block the user account temporarily if they are
-                // registered
+        } catch (AuthException e) {
+            // Special Case: Handle too many failed attempts
+            if (e.getStatus() == HttpStatus.TOO_MANY_REQUESTS) {
                 Optional<User> userOpt = userRepository.findByMobileNumber(sanitizedMobile);
                 if (userOpt.isPresent()) {
                     User userToBlock = userOpt.get();
-                    Optional<live.chronogram.auth.model.UserStatus> blockedStatus = userStatusRepository.findById("BL");
+                    // Block the account temporarily for 15 minutes
+                    Optional<live.chronogram.auth.model.UserStatus> blockedStatus = userStatusRepository.findById("BLOCK");
                     blockedStatus.ifPresent(status -> {
                         userToBlock.setUserStatus(status);
+                        userToBlock.setStatusReason("Exceeded maximum OTP attempts.");
+                        userToBlock.setLockedUntil(LocalDateTime.now().plusMinutes(15));
                         userRepository.save(userToBlock);
+                        
+                        // Audit Log for the failure
+                        saveLoginHistory(userToBlock, null, ipAddress, userAgent, false, "EXCEEDED_MAX_ATTEMPTS", latitude, longitude, city, country);
                     });
                 }
             }
-            throw e; // Re-throw the AuthException (whether it was too many requests, etc.)
+            throw e; 
         }
 
+        // If verification failed (but limit not reached), log and throw
         if (!isMobileVerified) {
-            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.UNAUTHORIZED,
+            Optional<User> userOpt = userRepository.findByMobileNumber(sanitizedMobile);
+            userOpt.ifPresent(u -> saveLoginHistory(u, null, ipAddress, userAgent, false, "INVALID_OTP", latitude, longitude, city, country));
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
                     "Invalid Mobile OTP");
         }
 
@@ -300,51 +689,114 @@ public class AuthService {
         Optional<User> userOpt = userRepository.findByMobileNumber(sanitizedMobile);
 
         if (userOpt.isEmpty()) {
-            // NEW USER FLOW - STATELESS
-            // Return NOT a JWT, but a Registration Token
-            // Step 1: Mobile Verified, Next: Email Required
-
-            // STRICT SIM CHECK (Optional here, or defer to completeProfile?
-            // Better to check here to reject invalid SIMs early)
+            // CASE: COMPLETELY NEW USER
+            // Logic: We don't create a DB record yet to keep the system stateless and prevent spam registrations.
+            // Instead, we return a stateless Registration Token with the claim 'EMAIL_REQUIRED'.
+            
+            // STRICT SIM CHECK: We enforce that a physical SIM serial is provided during registration for security.
             if (simSerial == null || simSerial.trim().isEmpty()) {
                 throw new RuntimeException("SIM_REQUIRED: Registration requires a valid SIM card.");
             }
 
-            return jwtTokenProvider.createRegistrationToken(sanitizedMobile, null, "EMAIL_REQUIRED");
+            // Capture the session ID from the verified Mobile OTP to maintain continuity in the next token
+            String sessionId = mobileOtp.getSessionId();
+
+            // Track progress: Step 1 (Mobile OTP verified)
+            saveIncompleteRegistration(sanitizedMobile, "MOBILE_VERIFIED", null, null,
+                    deviceId, deviceName, deviceModel, osName, osVersion, ipAddress, latitude, longitude, city, country);
+
+            return new TokenResponse(
+                    jwtTokenProvider.createRegistrationToken(sanitizedMobile, null, "EMAIL_REQUIRED", sessionId),
+                    null, "Mobile verified. Verify Email to proceed.");
         }
 
         User user = userOpt.get();
 
+        // Check if the user is marked as deleted
+        if (Boolean.TRUE.equals(user.getIsDeleted())) {
+            throw new AuthException(HttpStatus.GONE,
+                    "This account has been deleted.");
+        }
+
+        // Check if the user is explicitly blocked by an admin
+        if (Boolean.TRUE.equals(user.getIsBlocked())) {
+            throw new AuthException(HttpStatus.FORBIDDEN,
+                    "USER_BLOCKED: Your account has been blocked by an administrator.");
+        }
+
+        // Check Admin Approval Status (Non-blocking for now to satisfy existing APK logic)
+        if (Boolean.FALSE.equals(user.getIsDeleted()) && Boolean.FALSE.equals(user.getIsBlocked())) {
+            if ("REJECTED".equals(user.getApprovalStatus())) {
+                throw new AuthException(HttpStatus.FORBIDDEN,
+                        "USER_REJECTED: Your account access has been rejected by an administrator.");
+            }
+            // We allow PENDING or null for now so APK doesn't break
+        }
+
+        // Check Registration Completion Status (Non-blocking for now)
+        // This allows the admin panel to track progress without forcing the user out of the app.
+
+        // CASE: INCOMPLETE USER PROFILE (e.g., deleted email/name or crashed last time)
+        // Logic: Redirect them back to the Email Verification step.
+        if (user.getEmail() == null || user.getName() == null) {
+            logger.info("Found incomplete user profile for mobile: {}. Returning RegistrationToken.", sanitizedMobile);
+
+            if (simSerial == null || simSerial.trim().isEmpty()) {
+                throw new RuntimeException("SIM_REQUIRED: Registration requires a valid SIM card.");
+            }
+
+            String sessionId = mobileOtp.getSessionId();
+
+            return new TokenResponse(
+                    jwtTokenProvider.createRegistrationToken(sanitizedMobile, null, "EMAIL_REQUIRED", sessionId),
+                    null, "Email verification required to complete registration.");
+        }
+
         // 3. Check Account Status
-        if (!"AC".equals(user.getUserStatus().getUserStatusId())) {
+        if (!"ACTIVE".equals(user.getUserStatus().getUserStatusId())
+                && !"BLOCK".equals(user.getUserStatus().getUserStatusId())) {
             throw new RuntimeException("Account is " + user.getUserStatus().getName());
         }
 
-        // 4. Device Logic
-        boolean isDeviceTrusted = deviceService.isDeviceTrusted(user, deviceId);
+        if (user.getLockedUntil() != null) {
+            if (user.getLockedUntil().isAfter(LocalDateTime.now())) {
+                long minutesLeft = java.time.Duration.between(LocalDateTime.now(), user.getLockedUntil())
+                        .toMinutes();
+                if (minutesLeft == 0)
+                    minutesLeft = 1;
+                throw new AuthException(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        "Account locked. Please try again after " + minutesLeft + " minute(s).");
+            } else {
+                // Lock expired naturally, clear it 
+                user.setLockedUntil(null);
+                userRepository.save(user);
+            }
+        }
+
+        // 4. Device Security & Trust Logic
+        // Determine if this specific hardware ID (deviceId) has been previously verified for this user.
+        boolean isDeviceTrusted = deviceService.isDeviceTrusted(user, finalDeviceId);
         boolean hasOtherTrustedDevices = deviceService.hasAnyTrustedDevice(user.getUserId());
         boolean shouldTrustThisDevice = false;
 
-        // Fetch all user devices ONCE to avoid redundant DB calls and ensure
-        // availability
+        // Fetch all registered devices to determine where to send approval requests
         List<UserDevice> allUserDevices = userDeviceRepository.findByUser_UserId(user.getUserId());
 
         if (isDeviceTrusted) {
-            // Already trusted, proceed to login
+            // OPTION A: Device is already recognized and trusted. Direct Login allowed.
             shouldTrustThisDevice = true;
         } else {
-            // New Device Logic
+            // OPTION B: This is a NEW or UNTRUSTED Device
             if (!hasOtherTrustedDevices) {
-                // First device registration - Strict SIM Check handled above for new users.
-                // For existing users logging in on a "first" device (e.g. after clearing all
-                // devices),
-                // we might implicitly trust if SIM is present?
-                // For now, allow if no other trusted devices exist.
+                // Scenario: User has NO other trusted devices (e.g., first login on a new account 
+                // or they cleared all devices). We trust the current device implicitly 
+                // since they just passed the primary Mobile OTP challenge.
                 shouldTrustThisDevice = true;
             } else {
-                // Secondary Device Login
+                // Scenario: Secondary Device Login attempt.
                 if (isRecoveryFlow) {
-                    // "Lost Device" Flow
+                    // LOST DEVICE / RECOVERY FLOW: Must verify via secondary Email OTP immediately
                     if (emailOtpCode == null || emailOtpCode.isEmpty()) {
                         throw new RuntimeException("Email OTP required for recovery flow.");
                     }
@@ -355,9 +807,9 @@ public class AuthService {
                     }
                     shouldTrustThisDevice = true;
                 } else {
-                    // Normal "New Device" Flow
+                    // STANDARD NEW DEVICE FLOW: Requires explicit approval from other devices OR Email OTP
 
-                    // CHECK: If Email OTP is provided, try to verify it immediately
+                    // Check if the user already provided an Email OTP in the login payload
                     if (emailOtpCode != null && !emailOtpCode.isEmpty()) {
                         boolean isEmailVerified = otpService.verifyOtp(user.getEmail(), OtpType.NEW_DEVICE_VERIFICATION,
                                 emailOtpCode);
@@ -369,53 +821,42 @@ public class AuthService {
                     }
 
                     if (!shouldTrustThisDevice) {
-                        // Trigger Notification
-                        // We need to find trusted devices and send them an alert
+                        // APPROVAL REQUIRED: Block the login and send approval requests to trusted devices
                         List<UserDevice> trustedDevices = allUserDevices.stream()
                                 .filter(d -> Boolean.TRUE.equals(d.getIsTrusted()))
                                 .toList();
 
                         for (UserDevice td : trustedDevices) {
-                            String safeDeviceName = (deviceName != null && !deviceName.isEmpty()) ? deviceName
-                                    : "Unknown Device";
-                            String safeDeviceModel = (deviceModel != null && !deviceModel.isEmpty()) ? deviceModel
-                                    : "Unknown Model";
+                            String safeDeviceName = (deviceName != null && !deviceName.isEmpty()) ? deviceName : "Unknown Device";
+                            String safeDeviceModel = (deviceModel != null && !deviceModel.isEmpty()) ? deviceModel : "Unknown Model";
 
+                            // Send push notification to existing trusted devices
                             notificationService.sendNotification(td.getPushToken(),
                                     "New Login Attempt",
                                     "Attempt details: " + safeDeviceName + " (" + safeDeviceModel + ")",
                                     "LOGIN_APPROVAL_REQUEST",
-                                    "{\"targetDeviceId\": \"" + deviceId + "\"}");
+                                    "{\"targetDeviceId\": \"" + finalDeviceId + "\"}");
                         }
 
-                        // Trigger New Device Verification OTP to EMAIL
+                        // Also send a verification OTP to the user's primary email address
                         if (user.getEmail() != null && !user.getEmail().isEmpty()) {
-                            otpService.generateOtp(user.getEmail(),
+                            String[] otpResponse = otpService.generateOtp(user.getEmail(),
                                     live.chronogram.auth.enums.OtpType.NEW_DEVICE_VERIFICATION);
+                            String sessionId = otpResponse[1];
 
+                            // Provide a masked email hint to the user for privacy (e.g., ad***@gmail.com)
                             String email = user.getEmail();
-                            String maskedEmail = email.replaceAll("(^[^@]{3}|(?!^)\\G)[^@]", "$1*");
-                            // Simple mask: first 3 chars visible, rest hidden before @.
-                            // Better simple regex for "a***@gmail.com":
-                            int atIndex = email.indexOf("@");
-                            if (atIndex > 1) {
-                                String namePart = email.substring(0, atIndex);
-                                String domainPart = email.substring(atIndex);
-                                if (namePart.length() > 2) {
-                                    maskedEmail = namePart.substring(0, 2) + "***" + domainPart;
-                                } else {
-                                    maskedEmail = namePart + "***" + domainPart;
-                                }
-                            } else {
-                                maskedEmail = email; // Fallback
-                            }
+                            String maskedEmail = maskEmail(email);
 
+                            // Issue a temporary JWT that the user must use to verify the Email OTP
                             String temporaryToken = jwtTokenProvider.createRegistrationToken(sanitizedMobile,
-                                    user.getEmail(), "DEVICE_APPROVAL_REQUIRED");
+                                    user.getEmail(), "DEVICE_APPROVAL_REQUIRED", sessionId);
 
+                            // Halt the login flow and return 401-subset status via specialized exception
                             throw new live.chronogram.auth.exception.DeviceApprovalRequiredException(
-                                    "APPROVAL_REQUIRED: OTP sent to registered email.", maskedEmail, temporaryToken);
+                                    "APPROVAL_REQUIRED: OTP sent to registered email.", maskedEmail, temporaryToken, otpResponse[0]);
                         } else {
+                            // If no email is linked, the user is stuck unless they have other devices.
                             throw new live.chronogram.auth.exception.EmailLinkingRequiredException(
                                     "EMAIL_REQUIRED: No email registered. Cannot verify new device.");
                         }
@@ -424,33 +865,56 @@ public class AuthService {
             }
         }
 
-        // Send Login Alert to OTHER trusted devices (if login successful)
-        if (shouldTrustThisDevice) {
+        return completeLoginAndIssueTokens(user, finalDeviceId, simSerial, pushToken, deviceName, deviceModel,
+                osName, osVersion, appVersion, latitude, longitude, country, city, ipAddress, userAgent,
+                shouldTrustThisDevice);
+    }
+
+    /**
+     * Shared logic for completing a successful login, registering/updating the device,
+     * creating a session, and issuing JWT tokens.
+     */
+    private TokenResponse completeLoginAndIssueTokens(User user, String deviceId, String simSerial, String pushToken,
+            String deviceName, String deviceModel, String osName, String osVersion, String appVersion,
+            Double latitude, Double longitude, String country, String city, String ipAddress, String userAgent,
+            boolean trustThisDevice) {
+
+        // 1. Notify other trusted devices of the new login
+        List<UserDevice> allUserDevices = userDeviceRepository.findByUser_UserId(user.getUserId());
+        if (trustThisDevice) {
             List<UserDevice> otherTrustedDevices = allUserDevices.stream()
                     .filter(d -> Boolean.TRUE.equals(d.getIsTrusted()) && !d.getDeviceId().equals(deviceId))
                     .toList();
 
             for (UserDevice td : otherTrustedDevices) {
-                notificationService.sendLoginAlert(td.getPushToken(), deviceName, (latitude + "," + longitude));
+                String loc = (latitude != null && longitude != null) ? (latitude + "," + longitude) : "Unknown Location";
+                notificationService.sendLoginAlert(td.getPushToken(), deviceName, loc);
             }
         }
 
-        // Register/Update Device
+        // 2. Register or Update Device metadata
         UserDevice device = deviceService.registerOrUpdateDevice(user, deviceId, simSerial, pushToken, deviceName,
-                deviceModel,
-                osName, osVersion, appVersion, latitude, longitude, country, city, shouldTrustThisDevice);
+                deviceModel, osName, osVersion, appVersion, latitude, longitude, country, city, trustThisDevice);
 
-        // Generate Tokens
+        // Update registration status if in flow
+        if ("PROFILE_CREATED".equals(user.getRegistrationStatus())) {
+            user.setRegistrationStatus("DEVICE_REGISTERED");
+            updateRegistrationProgress(user.getUserId(), "DEVICE_REGISTERED");
+        }
+
+        // Update last login
+        user.setLastLoginAt(LocalDateTime.now());
+        userRepository.save(user);
+
+        // 3. Issue Security Tokens
         String accessToken = jwtTokenProvider.createAccessToken(user.getUserId(), "USER", device.getUserDeviceId());
         String refreshToken = jwtTokenProvider.createRefreshToken(user.getUserId());
 
-        // Create Session
+        // 4. Create and persist User Session
         UserSession session = new UserSession();
         session.setUser(user);
         session.setUserDevice(device);
-        session.setRefreshTokenHash(refreshToken);
-        session.setExpiresTimestamp(LocalDateTime.now().plusNanos(refreshTokenValidityInMs * 1000000));
-        session.setIsRevoked(false);
+        session.setRefreshTokenHash(hashRefreshToken(refreshToken));
         session.setExpiresTimestamp(LocalDateTime.now().plusNanos(refreshTokenValidityInMs * 1000000));
         session.setIsRevoked(false);
         session.setIpAddress(ipAddress);
@@ -460,10 +924,26 @@ public class AuthService {
         session.setCity(city);
         userSessionRepository.save(session);
 
-        // Save Login History
+        // 5. Reset Blocked/Banned status or Transition NEW status on successful verified login
+        String statusId = user.getUserStatus() != null ? user.getUserStatus().getUserStatusId() : "ACTIVE";
+        if ("BLOCK".equals(statusId) || "NEW".equals(statusId)) {
+            userStatusRepository.findById("ACTIVE").ifPresent(status -> {
+                user.setUserStatus(status);
+                user.setLockedUntil(null);
+                user.setStatusReason(null);
+                userRepository.save(user);
+                logger.info("Account status transitioned to ACTIVE after successful login for user: {}", user.getUserId());
+            });
+        }
+
+        // 6. Audit Trail
         saveLoginHistory(user, device, ipAddress, userAgent, true, null, latitude, longitude, city, country);
 
-        return accessToken;
+        MDC.put("txId", "TX" + System.currentTimeMillis());
+        flowLogger.info("event=USER_LOGIN name={} userId={} city={} country={}", user.getName(), user.getUserId(), city, country);
+        MDC.clear();
+
+        return new TokenResponse(accessToken, refreshToken, "Login successful.");
     }
 
     /**
@@ -476,41 +956,103 @@ public class AuthService {
      */
     @Transactional
     public String refreshToken(String refreshToken) {
+        // 1. Initial signature and expiration check via JwtTokenProvider
         if (!jwtTokenProvider.validateToken(refreshToken)) {
-            throw new RuntimeException("Invalid refresh token");
+            throw new AuthException(
+                    HttpStatus.UNAUTHORIZED, "Invalid refresh token.");
         }
 
+        // 2. Decode the token to identify the user and their role
         Long userId = jwtTokenProvider.getUserIdFromToken(refreshToken);
+        String role = jwtTokenProvider.getRoleFromToken(refreshToken);
 
-        // Use hash in real world
-        Optional<UserSession> sessionOpt = userSessionRepository.findByRefreshTokenHash(refreshToken);
+        // 3. Security Check: Verify User Status is still Active (Mandatory for Perpetual Sessions)
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new AuthException(
+                        HttpStatus.UNAUTHORIZED, "User not found."));
 
-        if (sessionOpt.isEmpty()) {
-            throw new RuntimeException("Session not found or revoked");
+        if (!"ACTIVE".equals(user.getUserStatus().getUserStatusId())) {
+            throw new AuthException(
+                    HttpStatus.FORBIDDEN, "Account is " + user.getUserStatus().getName() + ". Cannot renew session.");
         }
 
-        UserSession session = sessionOpt.get();
-        if (session.getIsRevoked()) {
-            throw new RuntimeException("Session is revoked");
-        }
+        // 4. Revocation Check: Search for an ACTIVE database session that matches this token.
+        // Since we store tokens as SHA-256 hashes, we must hash the incoming token and compare.
+        List<UserSession> activeSessions = userSessionRepository.findByUser_UserId(userId).stream()
+                .filter(s -> !s.getIsRevoked() && s.getExpiresTimestamp().isAfter(LocalDateTime.now()))
+                .toList();
 
-        if (session.getExpiresTimestamp().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Session expired");
-        }
+        UserSession matchedSession = activeSessions.stream()
+                .filter(s -> hashRefreshToken(refreshToken).equals(s.getRefreshTokenHash()))
+                .findFirst()
+                .orElseThrow(() -> new AuthException(
+                        HttpStatus.UNAUTHORIZED, "Invalid or expired refresh token."));
 
-        // Rotate Refresh Token? (Optional security practice)
-        // For now, just issue new Access Token
-
-        return jwtTokenProvider.createAccessToken(userId, "USER", session.getUserDevice().getUserDeviceId());
+        // 5. Generate a NEW Access Token
+        return jwtTokenProvider.createAccessToken(userId, role, matchedSession.getUserDevice().getUserDeviceId());
     }
 
+    /**
+     * Internal session validation for microservices.
+     */
+    @Transactional(readOnly = true)
+    public void validateSession(String token) {
+        // 1. Signature & Expiry check
+        if (!jwtTokenProvider.validateToken(token)) {
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "Invalid or Expired Token");
+        }
+
+        // 2. Revocation Check (User existence + Status + Session Active)
+        Long userId = jwtTokenProvider.getUserIdFromToken(token);
+        
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new AuthException(
+                        HttpStatus.UNAUTHORIZED, "User not found."));
+
+        if (!"ACTIVE".equals(user.getUserStatus().getUserStatusId())) {
+            throw new AuthException(
+                    HttpStatus.UNAUTHORIZED, "Account is " + user.getUserStatus().getName());
+        }
+
+        boolean hasActiveSession = userSessionRepository.existsByUser_UserIdAndIsRevoked(userId, false);
+        if (!hasActiveSession) {
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "Session has been revoked or logged out.");
+        }
+    }
+
+    /**
+     * Revokes a user session, effectively logging out the user.
+     * 
+     * @param refreshToken The raw refresh token string.
+     */
     @Transactional
     public void logout(String refreshToken) {
-        Optional<UserSession> sessionOpt = userSessionRepository.findByRefreshTokenHash(refreshToken);
-        sessionOpt.ifPresent(session -> {
-            session.setIsRevoked(true);
-            userSessionRepository.save(session);
-        });
+        // 1. Identify the user from the refresh token
+        Long userId = jwtTokenProvider.getUserIdFromToken(refreshToken);
+
+        // 2. Locate the specific session in the database
+        List<UserSession> activeSessions = userSessionRepository.findByUser_UserId(userId).stream()
+                .filter(s -> !s.getIsRevoked())
+                .toList();
+
+        UserSession matchedSession = activeSessions.stream()
+                .filter(s -> hashRefreshToken(refreshToken).equals(s.getRefreshTokenHash()))
+                .findFirst()
+                .orElseThrow(() -> new AuthException(
+                        HttpStatus.UNAUTHORIZED, "Invalid refresh token."));
+
+        // 3. Mark the session as revoked (invalidating the refresh token immediately)
+        matchedSession.setIsRevoked(true);
+        userSessionRepository.save(matchedSession);
+
+        // 4. Audit Log the logout event
+        String txId = "TX" + System.currentTimeMillis();
+        MDC.put("txId", txId);
+        flowLogger.info("event=USER_LOGOUT name={} userId={} city={} country={}", matchedSession.getUser().getName(),
+                userId, matchedSession.getCity(), matchedSession.getCountry());
+        MDC.clear();
     }
 
     /**
@@ -520,33 +1062,105 @@ public class AuthService {
      * 
      * @return The final Access Token granting access from the new device.
      */
-    @Transactional
-    public String verifyNewDevice(live.chronogram.auth.dto.VerifyNewDeviceRequest request, String ipAddress,
+    @Transactional(noRollbackFor = AuthException.class)
+    public TokenResponse verifyNewDevice(VerifyNewDeviceRequest request, String ipAddress,
             String userAgent) {
-        String sanitizedMobile = sanitizePhoneNumber(request.getMobileNumber());
-        logger.info("Verifying new device for mobile: {}", sanitizedMobile);
-        // 1. Find User (Look up by mobile first)
+        
+        // 1. Mandatory Device ID Validation (Trimmed for accuracy)
+        String finalDeviceId = request.getDeviceId() != null ? request.getDeviceId().trim() : null;
+        if (finalDeviceId == null || finalDeviceId.isEmpty()) {
+            throw new AuthException(
+                    HttpStatus.BAD_REQUEST,
+                    "Device ID is strictly required for new device verification.");
+        }
+        
+        // 2. Normalize and identify user context
+        String sanitizedMobile;
+        String emailToVerify;
+        String sessionTokenId = null;
+
+        if (request.getTemporaryToken() != null && !request.getTemporaryToken().trim().isEmpty()) {
+            // HIGH SECURITY FLOW (Token-based): Identify user and session via JWT
+            io.jsonwebtoken.Claims claims = jwtTokenProvider.getClaimsFromRegistrationToken(request.getTemporaryToken());
+            
+            String step = (String) claims.get("step");
+            if (!"DEVICE_APPROVAL_REQUIRED".equals(step)) {
+                throw new AuthException(HttpStatus.UNAUTHORIZED, "Invalid temporary token for new device verification.");
+            }
+            
+            sanitizedMobile = claims.getSubject();
+            emailToVerify = (String) claims.get("email");
+            sessionTokenId = (String) claims.get("sessionId");
+            
+            logger.info("Verifying new device via token for mobile: {} and email: {}", sanitizedMobile, emailToVerify);
+        } else {
+            // LEGACY FLOW (Mobile-based): Identify user via provided mobile number
+            sanitizedMobile = sanitizePhoneNumber(request.getMobileNumber());
+            
+            User userHint = userRepository.findByMobileNumber(sanitizedMobile)
+                    .orElseThrow(() -> new RuntimeException("User not found"));
+            emailToVerify = userHint.getEmail();
+        }
+
+        // 3. Fetch user and perform state checks
         User user = userRepository.findByMobileNumber(sanitizedMobile)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        if (user.getEmail() == null || user.getEmail().isEmpty()) {
-            throw new RuntimeException("No email registered for this user.");
+        if (user.getLockedUntil() != null && user.getLockedUntil().isAfter(LocalDateTime.now())) {
+            long minutesLeft = java.time.Duration.between(LocalDateTime.now(), user.getLockedUntil())
+                    .toMinutes();
+            if (minutesLeft == 0)
+                minutesLeft = 1;
+            throw new AuthException(
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "Account locked. Please try again after " + minutesLeft + " minute(s).");
         }
 
-        // 2. Verify OTP against EMAIL
-        boolean isVerified = otpService.verifyOtp(user.getEmail(),
-                live.chronogram.auth.enums.OtpType.NEW_DEVICE_VERIFICATION, request.getOtp());
+        // Ensure email matches user profile
+        if (emailToVerify == null || !emailToVerify.equalsIgnoreCase(user.getEmail())) {
+            throw new AuthException(HttpStatus.BAD_REQUEST, "Email mismatch for new device verification.");
+        }
+
+        // 4. Verify Session Continuity and OTP
+        String processedEmail = emailToVerify != null ? emailToVerify.trim() : null;
+        live.chronogram.auth.model.OtpVerification existingOtp = otpVerificationRepository
+                .findFirstByTargetAndOtpTypeOrderByCreatedTimestampDesc(processedEmail,
+                        live.chronogram.auth.enums.OtpType.NEW_DEVICE_VERIFICATION)
+                .orElseThrow(() -> new AuthException(HttpStatus.BAD_REQUEST, "No active OTP for new device verification."));
+
+        // sessionId Check (Only if token was provided)
+        if (sessionTokenId != null && !sessionTokenId.equals(existingOtp.getSessionId())) {
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "INVALID_OTP_SESSION: The temporary token does not match the current OTP attempt.");
+        }
+
+        boolean isVerified = false;
+        try {
+            isVerified = otpService.verifyOtp(emailToVerify,
+                    live.chronogram.auth.enums.OtpType.NEW_DEVICE_VERIFICATION, request.getOtp());
+        } catch (AuthException e) {
+            // Lock account on too many failed attempts
+            if (e.getStatus() == HttpStatus.TOO_MANY_REQUESTS) {
+                Optional<live.chronogram.auth.model.UserStatus> blockedStatus = userStatusRepository.findById("BLOCK");
+                blockedStatus.ifPresent(status -> {
+                    user.setUserStatus(status);
+                    user.setStatusReason("Exceeded maximum OTP attempts during new device verification.");
+                    user.setLockedUntil(LocalDateTime.now().plusMinutes(15));
+                    userRepository.save(user);
+                });
+            }
+            throw e;
+        }
         if (!isVerified) {
-            throw new RuntimeException("Invalid OTP for new device verification");
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "Invalid OTP for new device verification");
         }
 
-        // 3. Register/Trust Device
-        // Since the initial login attempt threw an exception (rolling back DB),
-        // we must register the device here as "Trusted".
+        // 4. Success: Register and permanently Mark the Device as Trusted
         UserDevice device = deviceService.registerOrUpdateDevice(user,
-                request.getDeviceId(),
-                null, // simSerial might not be passed in this step? Or request should have it?
-                null, // pushToken might be missing
+                finalDeviceId,
+                null, // simSerial may not be present in this callback
+                null, // pushToken may not be present in this callback
                 request.getDeviceName(),
                 request.getDeviceModel(),
                 request.getOsName(),
@@ -556,16 +1170,16 @@ public class AuthService {
                 request.getLongitude(),
                 request.getCountry(),
                 request.getCity(),
-                true); // IMP: Trust this device
+                true); // TRUST GRANTED
 
-        // 4. Create Session & Token (Same logic as login)
+        // 5. Create final Session & issue Tokens
         String accessToken = jwtTokenProvider.createAccessToken(user.getUserId(), "USER", device.getUserDeviceId());
         String refreshToken = jwtTokenProvider.createRefreshToken(user.getUserId());
 
         UserSession session = new UserSession();
         session.setUser(user);
         session.setUserDevice(device);
-        session.setRefreshTokenHash(refreshToken);
+        session.setRefreshTokenHash(hashRefreshToken(refreshToken));
         session.setExpiresTimestamp(LocalDateTime.now().plusNanos(refreshTokenValidityInMs * 1000000));
         session.setIsRevoked(false);
         session.setIpAddress(ipAddress);
@@ -575,11 +1189,10 @@ public class AuthService {
         session.setCity(request.getCity());
         userSessionRepository.save(session);
 
-        // Notify other devices of new login? (Optional but good)
-        // Send Login Alert to OTHER trusted devices
+        // 6. Security: Notify other trusted devices of the new verified login
         List<UserDevice> allUserDevices = userDeviceRepository.findByUser_UserId(user.getUserId());
         List<UserDevice> otherTrustedDevices = allUserDevices.stream()
-                .filter(d -> Boolean.TRUE.equals(d.getIsTrusted()) && !d.getDeviceId().equals(request.getDeviceId()))
+                .filter(d -> Boolean.TRUE.equals(d.getIsTrusted()) && !d.getDeviceId().equals(finalDeviceId))
                 .toList();
 
         for (UserDevice td : otherTrustedDevices) {
@@ -589,66 +1202,133 @@ public class AuthService {
             notificationService.sendLoginAlert(td.getPushToken(), request.getDeviceName(), loc);
         }
 
-        // Save Login History
+        // 7. Audit Logging
         saveLoginHistory(user, device, ipAddress, userAgent, true, null, request.getLatitude(), request.getLongitude(),
                 request.getCity(), request.getCountry());
 
-        return accessToken;
+        return new TokenResponse(accessToken, refreshToken, "New device verified and logged in.");
     }
 
-    /**
-     * Initiates linking a new email to an account, generating an Email OTP.
-     * Extracts mobile info prioritizing the provided token if present.
-     */
-    @Transactional
-    public String linkEmail(live.chronogram.auth.dto.LinkEmailRequest request) {
-        String mobileNumber = sanitizePhoneNumber(request.getMobileNumber());
-
-        // Prioritize Token if present
-        if (request.getRegistrationToken() != null && !request.getRegistrationToken().isEmpty()) {
-            io.jsonwebtoken.Claims claims = jwtTokenProvider
-                    .getClaimsFromRegistrationToken(request.getRegistrationToken());
-            mobileNumber = claims.getSubject();
+    @Transactional(noRollbackFor = AuthException.class)
+    public String[] linkEmail(live.chronogram.auth.dto.LinkEmailRequest request) {
+        // 1. Security Check: A valid registration token is mandatory to prove the user has already verified their mobile
+        if (request.getRegistrationToken() == null || request.getRegistrationToken().trim().isEmpty()) {
+            throw new RuntimeException("Registration token is required to link an email securely.");
         }
 
-        // Validate Mobile (Ensure not already registered) e.g. race condition check?
+        // 2. Decode the token and verify the current state
+        io.jsonwebtoken.Claims claims = jwtTokenProvider
+                .getClaimsFromRegistrationToken(request.getRegistrationToken());
+
+        String currentStep = (String) claims.get("step");
+        if (!"EMAIL_REQUIRED".equals(currentStep)) {
+            throw new RuntimeException("Invalid registration step. Cannot link email.");
+        }
+
+        String mobileNumber = claims.getSubject();
+
+        // 3. Prevent linking to an already fully registered account via this flow
         if (userRepository.findByMobileNumber(mobileNumber).isPresent()) {
-            throw new RuntimeException("User already registered.");
+            User existingUser = userRepository.findByMobileNumber(mobileNumber).get();
+            if (existingUser.getEmail() != null && existingUser.getName() != null) {
+                throw new RuntimeException("User already registered.");
+            }
         }
 
+        // 4. Validate and format the target email address
         String formattedEmail = validateAndFormatEmail(request.getEmail());
 
+        // 5. Global Uniqueness Check: Ensure no other user is using this email
         if (userRepository.findByEmail(formattedEmail).isPresent()) {
             throw new RuntimeException("Email already in use.");
         }
 
-        return otpService.generateOtp(formattedEmail, live.chronogram.auth.enums.OtpType.EMAIL_LINKING);
+        // 6. Generate the OTP record for email linking
+        String[] otpResponse = otpService.generateOtp(formattedEmail, live.chronogram.auth.enums.OtpType.EMAIL_LINKING);
+        String otp = otpResponse[0];
+        String sessionId = otpResponse[1];
+
+        // Track progress: Step 2 (Email link OTP sent)
+        saveIncompleteRegistration(mobileNumber, "EMAIL_SENT", formattedEmail, null,
+                null, null, null, null, null, null, null, null, null, null);
+
+        // 7. Update the Registration Token to bind the target email and the new session ID
+        String token = jwtTokenProvider.createRegistrationToken(mobileNumber, formattedEmail, "EMAIL_REQUIRED",
+                sessionId);
+
+        return new String[] { otp, token };
     }
 
-    /**
-     * Verifies the OTP sent during the linking process.
-     * Completes this step by generating a token allowing the user to proceed to
-     * Profile Completion.
-     */
-    @Transactional
+    @Transactional(noRollbackFor = AuthException.class)
     public String verifyLinkEmail(live.chronogram.auth.dto.VerifyEmailRequest request) {
-        String mobileNumber = request.getMobileNumber();
-
-        if (request.getRegistrationToken() != null && !request.getRegistrationToken().isEmpty()) {
-            io.jsonwebtoken.Claims claims = jwtTokenProvider
-                    .getClaimsFromRegistrationToken(request.getRegistrationToken());
-            mobileNumber = claims.getSubject();
+        // 1. Mandatory Token Check
+        if (request.getRegistrationToken() == null || request.getRegistrationToken().trim().isEmpty()) {
+            throw new RuntimeException("Registration token is required to verify email link.");
         }
 
+        // 2. Decode claims and verify step
+        io.jsonwebtoken.Claims claims = jwtTokenProvider
+                .getClaimsFromRegistrationToken(request.getRegistrationToken());
+
+        String currentStep = (String) claims.get("step");
+        if (!"EMAIL_REQUIRED".equals(currentStep)) {
+            throw new RuntimeException("Invalid registration step.");
+        }
+
+        String mobileNumber = claims.getSubject();
+        String boundEmail = (String) claims.get("email");
         String formattedEmail = validateAndFormatEmail(request.getEmail());
-        boolean isVerified = otpService.verifyOtp(formattedEmail, live.chronogram.auth.enums.OtpType.EMAIL_LINKING,
-                request.getOtp());
-        if (!isVerified) {
-            throw new RuntimeException("Invalid Email OTP");
+
+        // 3. Security Check: The email being verified MUST match the one bound in the token
+        if (boundEmail == null || !boundEmail.equals(formattedEmail)) {
+            throw new RuntimeException("Email mismatch. The email being verified does not match the token.");
         }
 
-        // Return Next Step Token
-        return jwtTokenProvider.createRegistrationToken(mobileNumber, formattedEmail, "PROFILE_REQUIRED");
+        String sessionTokenId = (String) claims.get("sessionId");
+
+        // 4. Locate the specific OTP verification record
+        live.chronogram.auth.model.OtpVerification emailOtp = otpVerificationRepository
+                .findFirstByTargetAndOtpTypeOrderByCreatedTimestampDesc(formattedEmail,
+                        live.chronogram.auth.enums.OtpType.EMAIL_LINKING)
+                .orElseThrow(() -> new AuthException(
+                        HttpStatus.BAD_REQUEST, "OTP_NOT_FOUND: No active OTP record."));
+
+        // 5. Verify session continuity
+        if (sessionTokenId == null || !sessionTokenId.equals(emailOtp.getSessionId())) {
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "INVALID_OTP_SESSION: The session token does not match the current OTP attempt.");
+        }
+
+        // 6. Verify the OTP code
+        boolean isVerified = false;
+        try {
+            isVerified = otpService.verifyOtp(formattedEmail, live.chronogram.auth.enums.OtpType.EMAIL_LINKING,
+                    request.getOtp());
+        } catch (AuthException e) {
+            // Lock the user if they exceed attempts
+            if (e.getStatus() == HttpStatus.TOO_MANY_REQUESTS) {
+                userRepository.findByMobileNumber(mobileNumber).ifPresent(userToBlock -> {
+                    userStatusRepository.findById("BLOCK").ifPresent(status -> {
+                        userToBlock.setUserStatus(status);
+                        userRepository.save(userToBlock);
+                    });
+                });
+            }
+            throw e;
+        }
+        
+        if (!isVerified) {
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "Invalid Email OTP");
+        }
+
+        // Track progress: Step 3 (Email verified)
+        saveIncompleteRegistration(mobileNumber, "EMAIL_VERIFIED", formattedEmail, null,
+                null, null, null, null, null, null, null, null, null, null);
+
+        // 7. Success: Return a new token that allows the user to proceed to 'PROFILE_REQUIRED' step
+        return jwtTokenProvider.createRegistrationToken(mobileNumber, formattedEmail, "PROFILE_REQUIRED",
+                sessionTokenId);
     }
 
     /**
@@ -659,74 +1339,92 @@ public class AuthService {
      * User entity, and generates their first session tokens.
      */
     @Transactional
-    public String completeProfile(live.chronogram.auth.dto.CompleteProfileRequest request, String ipAddress,
+    public TokenResponse completeProfile(live.chronogram.auth.dto.CompleteProfileRequest request, String ipAddress,
             String userAgent) {
         String mobileNumber = null;
         String email = null;
 
+        // 1. Validation: Extract validated info from the Registration Token
         if (request.getRegistrationToken() != null && !request.getRegistrationToken().isEmpty()) {
             io.jsonwebtoken.Claims claims = jwtTokenProvider
                     .getClaimsFromRegistrationToken(request.getRegistrationToken());
             mobileNumber = claims.getSubject();
             email = (String) claims.get("email");
 
+            // Ensure the user has actually passed the previous 'PROFILE_REQUIRED' step
             if (!"PROFILE_REQUIRED".equals(claims.get("step"))) {
-                throw new RuntimeException("Invalid registration step. Please verify email first.");
+                throw new AuthException(HttpStatus.BAD_REQUEST,
+                        "Invalid registration step. Please verify email first.");
             }
             logger.info("Completing profile for mobile (from token): {}", mobileNumber);
         } else {
-            mobileNumber = sanitizePhoneNumber(request.getMobileNumber());
-            logger.info("Completing profile for mobile: {}", mobileNumber);
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "Security Token Missing: You must complete the OTP verification steps to register.");
         }
 
-        if (userRepository.findByMobileNumber(mobileNumber).isPresent()) {
-            throw new RuntimeException("User already exists.");
+        // 2. Identify or Create User record
+        Optional<User> existingUserOpt = userRepository.findByMobileNumber(mobileNumber);
+        User userToSave;
+
+        if (existingUserOpt.isPresent()) {
+            User existingUser = existingUserOpt.get();
+            // Safety check: Don't allow re-registration of fully complete profiles
+            if (existingUser.getEmail() != null && existingUser.getName() != null) {
+                throw new RuntimeException("User already completed registration.");
+            }
+            userToSave = existingUser;
+            logger.info("Updating incomplete legacy user profile for mobile: {}", mobileNumber);
+        } else {
+            userToSave = new User();
+            userToSave.setMobileNumber(mobileNumber);
+            logger.info("Creating new user profile for mobile: {}", mobileNumber);
         }
 
-        // Validation of complete profile parameters
-        if (request.getName() == null || request.getName().trim().isEmpty()) {
-            throw new RuntimeException("Name is required to complete profile.");
-        }
-        if (request.getDob() == null || request.getDob().trim().isEmpty()) {
-            throw new RuntimeException("Date of Birth is required to complete profile.");
-        }
-        if (email == null || email.trim().isEmpty()) {
-            throw new RuntimeException("Verified email is missing from registration flow.");
-        }
-
-        // CREATE USER (Finally!)
-        User newUser = new User();
-        newUser.setMobileNumber(mobileNumber);
-        newUser.setEmail(email);
-        newUser.setName(request.getName().trim());
+        // 3. Update User demographic data
+        userToSave.setEmail(email);
+        userToSave.setName(request.getName().trim());
         try {
             java.time.LocalDate dateOfBirth = java.time.LocalDate.parse(request.getDob());
-
-            // Age Validation (Must be 12+)
+            // Logical check for DOB
+            if (dateOfBirth.isAfter(java.time.LocalDate.now())) {
+                throw new RuntimeException("Invalid Date of Birth. Cannot be in the future.");
+            }
+            // Age restriction (12+)
             int age = java.time.Period.between(dateOfBirth, java.time.LocalDate.now()).getYears();
             if (age < 12) {
                 throw new RuntimeException("You must be at least 12 years old to register.");
             }
-
-            newUser.setDob(dateOfBirth);
+            userToSave.setDob(dateOfBirth);
         } catch (java.time.format.DateTimeParseException e) {
             throw new RuntimeException("Invalid Date of Birth format. Please use YYYY-MM-DD.");
         }
-        newUser.setMobileVerified(true);
-        newUser.setEmailVerified(true);
-        newUser.setProfilePictureUrl(
-                "https://api.dicebear.com/9.x/micah/svg?seed=" + request.getName().replace(" ", "+"));
 
-        Optional<UserStatus> activeStatus = userStatusRepository.findById("AC");
-        activeStatus.ifPresent(newUser::setUserStatus);
+        userToSave.setMobileVerified(true);
+        userToSave.setEmailVerified(true);
 
-        User savedUser = userRepository.save(newUser);
 
-        // Register/Update Device (FIX: Now capturing device info during registration)
-        // Note: For new registration, we treat it as trusted?
-        // Usually yes, if they just verified MOBILE + EMAIL on this device.
+        // Assign 'Pending' approval status by default for new users
+        userToSave.setApprovalStatus("PENDING");
+        userToSave.setRegistrationStatus("PROFILE_CREATED");
+
+        // Initialize UserStatus to 'NEW' for new users awaiting approval
+        if (userToSave.getUserStatus() == null) {
+            userStatusRepository.findById("NEW").ifPresent(userToSave::setUserStatus);
+        }
+
+        User savedUser = userRepository.save(userToSave);
+        
+        // Update progress tracking
+        updateRegistrationProgress(savedUser.getUserId(), "PROFILE_CREATED");
+
+        // 4. Register the current device as the first 'Trusted' device for this user
+        String finalDeviceId = request.getDeviceId() != null ? request.getDeviceId().trim() : null;
+        if (finalDeviceId == null || finalDeviceId.isEmpty()) {
+            throw new RuntimeException("Device ID is required to complete profile.");
+        }
+        
         UserDevice device = deviceService.registerOrUpdateDevice(savedUser,
-                request.getDeviceId(),
+                finalDeviceId,
                 request.getSimSerial(),
                 request.getPushToken(),
                 request.getDeviceName(),
@@ -738,87 +1436,184 @@ public class AuthService {
                 request.getLongitude(),
                 request.getCountry(),
                 request.getCity(),
-                true); // Trusted on first registration
+                true); // IMP: Always trusted on first registration
 
-        // Generate Tokens
-        String accessToken = jwtTokenProvider.createAccessToken(savedUser.getUserId(), "USER",
-                device.getUserDeviceId());
-        String refreshToken = jwtTokenProvider.createRefreshToken(savedUser.getUserId());
+        // 5. SECURITY FIX: Do NOT issue final security tokens until Admin Approval is granted.
+        // Returning null tokens signals the Flutter app to stay on a 'Wait for Approval' screen.
+        String accessToken = null;
+        String refreshToken = null;
 
-        // Create Session
-        UserSession session = new UserSession();
-        session.setUser(savedUser);
-        session.setUserDevice(device); // Link Session to Device
-        session.setRefreshTokenHash(refreshToken);
-        session.setExpiresTimestamp(LocalDateTime.now().plusNanos(refreshTokenValidityInMs * 1000000));
-        session.setIsRevoked(false);
-        session.setIpAddress(ipAddress);
-        session.setLatitude(request.getLatitude());
-        session.setLongitude(request.getLongitude());
-        session.setCountry(request.getCountry());
-        session.setCity(request.getCity());
-        userSessionRepository.save(session);
-
-        // Save Login History (First Login)
-        saveLoginHistory(savedUser, device, ipAddress, userAgent, true, null, request.getLatitude(),
+        // 6. Audit logs
+        saveLoginHistory(savedUser, device, ipAddress, userAgent, false, "PENDING_APPROVAL", request.getLatitude(),
                 request.getLongitude(), request.getCity(), request.getCountry());
 
-        return accessToken;
+        String txId = "TX" + System.currentTimeMillis();
+        MDC.put("txId", txId);
+        flowLogger.info("event=USER_REGISTER name={} userId={} status=PENDING_APPROVAL", savedUser.getName(),
+                savedUser.getUserId());
+        MDC.clear();
+
+        // 7. Cleanup incomplete registration
+        try {
+            incompleteRegistrationRepository.deleteByMobileNumber(mobileNumber);
+            logger.info("Cleaned up incomplete registration for: {}", mobileNumber);
+        } catch (Exception e) {
+            logger.warn("Failed to cleanup incomplete registration for {}: {}", mobileNumber, e.getMessage());
+        }
+
+        return new TokenResponse(accessToken, refreshToken, "your profile created wait for admin approval");
     }
 
     /**
      * Middle-step in stateless registration: Verifies the email via OTP and
      * progresses the registration token.
      */
-    @Transactional
-    public String verifyEmailOtpForRegistration(String email, String otpCode, String registrationToken) {
+    @Transactional(noRollbackFor = AuthException.class)
+    public TokenResponse verifyEmailOtpForRegistration(String email, String otpCode, String registrationToken) {
+        // 1. Mandatory Token Check
         if (registrationToken == null || registrationToken.isEmpty()) {
             throw new RuntimeException("Registration token required.");
         }
 
+        // 2. Decode claims and verify step logic
         io.jsonwebtoken.Claims claims = jwtTokenProvider.getClaimsFromRegistrationToken(registrationToken);
         String mobileNumber = claims.getSubject();
         String currentStep = (String) claims.get("step");
 
         if (!"EMAIL_REQUIRED".equals(currentStep)) {
-            throw new RuntimeException("Invalid registration step.");
+            throw new AuthException(HttpStatus.BAD_REQUEST,
+                    "Invalid registration step.");
+        }
+
+        // 3. Email Mismatch Check: Ensure the email provided matches what was verified in the previous step
+        String tokenEmail = (String) claims.get("email");
+        if (tokenEmail == null || !tokenEmail.equalsIgnoreCase(email.trim())) {
+            throw new AuthException(HttpStatus.BAD_REQUEST,
+                    "Email mismatch: The provided email does not match the token's registered email.");
         }
 
         String formattedEmail = validateAndFormatEmail(email);
-        boolean isVerified = otpService.verifyOtp(formattedEmail, OtpType.EMAIL_VERIFICATION, otpCode);
-        if (!isVerified) {
-            throw new RuntimeException("Invalid Email OTP");
+        String sessionTokenId = (String) claims.get("sessionId");
+
+        // 4. Fetch the specific OTP record
+        live.chronogram.auth.model.OtpVerification emailOtp = otpVerificationRepository
+                .findFirstByTargetAndOtpTypeOrderByCreatedTimestampDesc(formattedEmail,
+                        live.chronogram.auth.enums.OtpType.EMAIL_VERIFICATION)
+                .orElseThrow(() -> new AuthException(
+                        HttpStatus.BAD_REQUEST, "OTP_NOT_FOUND: No active OTP record."));
+
+        // 5. Continuity check
+        if (sessionTokenId == null || !sessionTokenId.equals(emailOtp.getSessionId())) {
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "INVALID_OTP_SESSION: The session token does not match the current OTP attempt.");
         }
 
-        // Generate Next Token (Step: PROFILE_REQUIRED)
-        // Store validated email in token so we trust it in next step
-        return jwtTokenProvider.createRegistrationToken(mobileNumber, formattedEmail, "PROFILE_REQUIRED");
+        // 6. Verify visual code
+        boolean isVerified = false;
+        try {
+            isVerified = otpService.verifyOtp(formattedEmail, OtpType.EMAIL_VERIFICATION, otpCode);
+        } catch (AuthException e) {
+            // Lock logic handled inside otpService and re-thrown
+            throw e;
+        }
+        if (!isVerified) {
+            throw new AuthException(HttpStatus.UNAUTHORIZED,
+                    "Invalid Email OTP");
+        }
+
+        // 7. Success: Return a token that identifies the user as ready for 'PROFILE_REQUIRED'
+        return new TokenResponse(
+                jwtTokenProvider.createRegistrationToken(mobileNumber, formattedEmail, "PROFILE_REQUIRED",
+                        sessionTokenId),
+                null,
+                "Email verified. Complete profile to finalize registration.");
     }
 
+    /**
+     * Retrieves the profile details for a given user.
+     * 
+     * @param userId The ID of the user.
+     * @return A UserResponse object containing public profile information.
+     */
     public live.chronogram.auth.dto.UserResponse getUserDetails(Long userId) {
-        User user = userRepository.findById(userId)
+        // 1. Fetch user data via a projected query (optimizing performance by selecting only necessary fields)
+        live.chronogram.auth.dto.UserSummaryProjection user = userRepository.findProjectedByUserId(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
+        // 2. Account Security: Ensure deleted users cannot fetch their details
+        if (Boolean.TRUE.equals(user.getIsDeleted())) {
+            throw new AuthException(HttpStatus.GONE,
+                    "Account deleted.");
+        }
+
+        // 2. Security Requirement: Mask PII (Personal Identifiable Information) before returning to the UI
+        String maskedEmail = maskEmail(user.getEmail());
+        String maskedMobile = maskMobileNumber(user.getMobileNumber());
+
+        // 3. Construct the DTO response
         return new live.chronogram.auth.dto.UserResponse(
                 user.getUserId(),
                 user.getName(),
-                user.getEmail(),
-                user.getMobileNumber(),
+                maskedEmail,
+                maskedMobile,
                 user.getDob() != null ? user.getDob().toString() : null,
-                user.getProfilePictureUrl(),
-                user.getMobileVerified(),
-                user.getEmailVerified(),
-                user.getUserStatus() != null ? user.getUserStatus().getName() : "Unknown");
+                user.getMobileVerified() != null ? user.getMobileVerified() : false,
+                user.getEmailVerified() != null ? user.getEmailVerified() : false,
+                user.getUserStatus() != null && user.getUserStatus().getName() != null
+                        ? user.getUserStatus().getName()
+                        : "Unknown");
     }
 
+    /**
+     * Masks an email address (e.g., adityaa5@gmail.com -> adit***a5@gmail.com)
+     */
+    private String maskEmail(String email) {
+        if (email == null || email.isEmpty())
+            return email;
+        int atIndex = email.indexOf("@");
+        if (atIndex < 6)
+            return email; // Too short to mask with 4+2 pattern
+
+        String namePart = email.substring(0, atIndex);
+        String domainPart = email.substring(atIndex);
+
+        String firstPart = namePart.substring(0, 4);
+        String lastPart = namePart.substring(namePart.length() - 2);
+
+        return firstPart + "***" + lastPart + domainPart;
+    }
+
+    /**
+     * Masks a mobile number (e.g., +919366666645 -> +9193******45)
+     */
+    private String maskMobileNumber(String mobileNumber) {
+        if (mobileNumber == null || mobileNumber.length() < 10)
+            return mobileNumber;
+
+        // Show first 5 (+91XX) and last 2 (XX)
+        String firstPart = mobileNumber.substring(0, 5);
+        String lastPart = mobileNumber.substring(mobileNumber.length() - 2);
+        String maskedPart = "*".repeat(mobileNumber.length() - 7);
+
+        return firstPart + maskedPart + lastPart;
+    }
+
+    /**
+     * Checks if a user is already registered with the given mobile number.
+     */
     public boolean isUserRegistered(String mobileNumber) {
+        // Standardize the input before searching the DB
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
         return userRepository.findByMobileNumber(sanitizedMobile).isPresent();
     }
 
+    /**
+     * Persists a login attempt (success or failure) to the audit log.
+     */
     private void saveLoginHistory(User user, UserDevice device, String ipAddress, String userAgent, boolean success,
             String failureReason, Double latitude, Double longitude, String city, String country) {
         try {
+            // 1. Initialize Audit Record
             live.chronogram.auth.model.LoginHistory history = new live.chronogram.auth.model.LoginHistory();
             history.setUserId(user.getUserId());
             history.setIpAddress(ipAddress);
@@ -827,50 +1622,228 @@ public class AuthService {
             history.setFailureReason(failureReason);
             history.setCreatedTimestamp(LocalDateTime.now());
 
+            // 2. Capture device metadata if available
             if (device != null) {
                 history.setDeviceModel(device.getDeviceModel());
-                // history.setDeviceType(device.getDeviceType()); // If available
                 history.setOs(device.getOsName() + " " + device.getOsVersion());
-                history.setBrowser(null); // App doesn't usually send browser info unless parsed from UA
+                history.setBrowser(null); // Mobile app context (usually no specific browser)
             }
 
+            // 3. Set Geolocation data
             history.setLatitude(latitude);
             history.setLongitude(longitude);
             history.setCity(city);
             history.setCountry(country);
 
+            // 4. Persist (Safe execution - nested in try-catch)
             loginHistoryRepository.save(history);
         } catch (Exception e) {
+            // Security Best Practice: Don't block the actual login flow if the audit trails fail to save
             logger.error("Failed to save login history: {}", e.getMessage());
-            // Don't block login if history fails
         }
     }
 
+    /**
+     * Standardizes and validates phone numbers (e.g., adds country code +91 for
+     * India).
+     */
     private String sanitizePhoneNumber(String mobileNumber) {
         if (mobileNumber == null) {
             throw new RuntimeException("Mobile number is required");
         }
-        // Remove spaces, dashes, parentheses
+        // 1. Remove all non-digit formatting characters
         String cleaned = mobileNumber.replaceAll("[\\s\\-\\(\\)]", "");
 
-        // Optional '+' at the start followed by 10 to 15 digits
+        // 2. Validate length and format (E.164-ish)
         if (!cleaned.matches("^\\+?\\d{10,15}$")) {
             throw new RuntimeException("Invalid mobile number format.");
         }
 
-        // If it's a 10 digit number, assume India (+91)
+        // 3. Auto-fix: If it's 10 digits, assume India (+91)
         if (cleaned.matches("^\\d{10}$")) {
             return "+91" + cleaned;
         }
 
-        // If it starts with 91 and is 12 digits, add +
+        // 4. Auto-fix: If it's '91' prefix without central '+'
         if (cleaned.matches("^91\\d{10}$")) {
             return "+" + cleaned;
         }
 
-        // Return as is if it already has + or is non-standard,
-        // validation can happen downstream if needed or here.
         return cleaned;
+    }
+
+    /**
+     * Helper to generate OTP while ensuring account lockout if limits are reached.
+     * Returns [otpCode, sessionId]
+     */
+    private String[] generateOtpWithLockout(String target, OtpType otpType, Optional<User> userOpt) {
+        return generateOtpWithLockout(target, otpType, userOpt, false);
+    }
+
+    /**
+     * Helper to generate OTP while ensuring account lockout if limits are reached.
+     * When {@code isResend} is {@code true}, bypasses the spam-wait check so a new
+     * OTP can be issued immediately even if the previous one has not expired yet.
+     *
+     * @param target   Phone number or email to generate the OTP for.
+     * @param otpType  The OTP context (MOBILE_LOGIN, EMAIL_VERIFICATION, etc.).
+     * @param userOpt  Optional user to lock on too-many-requests.
+     * @param isResend {@code true} when invoked from a resend endpoint.
+     * @return Array of [otpCode, sessionId].
+     */
+    @Transactional(noRollbackFor = AuthException.class)
+    protected String[] generateOtpWithLockout(String target, OtpType otpType, Optional<User> userOpt, boolean isResend) {
+        try {
+            return otpService.generateOtp(target, otpType, isResend);
+        } catch (AuthException e) {
+            if (e.getStatus() == HttpStatus.TOO_MANY_REQUESTS && userOpt.isPresent()) {
+                User userToBlock = userOpt.get();
+                Optional<live.chronogram.auth.model.UserStatus> blockedStatus = userStatusRepository.findById("BLOCK");
+                blockedStatus.ifPresent(status -> {
+                    userToBlock.setUserStatus(status);
+                    userToBlock.setStatusReason("Exceeded maximum OTP attempts or resends.");
+                    userToBlock.setLockedUntil(LocalDateTime.now().plusMinutes(15));
+                    userRepository.save(userToBlock);
+                });
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * Authenticates a user using a Firebase ID Token.
+     * If the user exists, it performs a login.
+     * If the user does not exist, it initiates registration.
+     */
+    @Transactional(noRollbackFor = AuthException.class)
+    public TokenResponse authenticateWithFirebase(String idToken, LoginRequest request, String ipAddress, String userAgent) {
+        // 1. Verify the Firebase Token
+        String phoneNumber = firebaseAuthService.verify(idToken);
+        if (phoneNumber == null || phoneNumber.isEmpty()) {
+            throw new AuthException(
+                    HttpStatus.UNAUTHORIZED, "Firebase token did not contain a valid phone number.");
+        }
+
+        // 2. Standardize phone number
+        String sanitizedMobile = sanitizePhoneNumber(phoneNumber);
+
+        // 2.2 Verify OTP Session Continuity 
+        // Ensure that the device doing the Firebase login is the exact same device that requested the OTP 
+        String otpSessionToken = request.getOtpSessionToken();
+        if (otpSessionToken == null || otpSessionToken.trim().isEmpty()) {
+            throw new AuthException(HttpStatus.BAD_REQUEST,
+                    "OTP_SESSION_TOKEN_REQUIRED: The OtpSessionToken from the send-otp step is missing.");
+        }
+        
+        // Parse claims from the OTP session token (allow expired because Firebase handles its own timeouts)
+        io.jsonwebtoken.Claims sessionClaims = jwtTokenProvider.getClaimsFromOtpSessionToken(otpSessionToken, true);
+        String sessionMobile = sessionClaims.getSubject();
+        String sessionDeviceId = (String) sessionClaims.get("deviceId");
+        
+        if (!sanitizedMobile.equals(sessionMobile)) {
+            throw new AuthException(HttpStatus.FORBIDDEN,
+                    "OTP session mismatch: This token belongs to a different mobile number or has expired. Please request a new OTP.");
+        }
+        String requestDeviceId = request.getDeviceId();
+        if (requestDeviceId == null || !requestDeviceId.equals(sessionDeviceId)) {
+            throw new AuthException(HttpStatus.FORBIDDEN,
+                    "Cross-device Firebase login attempt detected and blocked.");
+        }
+
+        // 2.5 🔥 FIX: Clean up any stale/unverified MOBILE_LOGIN OTP records for this mobile number
+        // This prevents the conflict where a prior "skipSms" or manual registration attempt 
+        // leaves a record in the DB that blocks future requests.
+        try {
+            otpVerificationRepository.deleteByTargetAndOtpType(sanitizedMobile, OtpType.MOBILE_LOGIN);
+            logger.info("Successfully cleaned up stale MySQL OTPs for phone: {}", sanitizedMobile);
+        } catch (Exception e) {
+            logger.warn("Could not delete stale OTPs during Firebase login (not critical): {}", e.getMessage());
+        }
+
+        Optional<User> userOpt = userRepository.findByMobileNumber(sanitizedMobile);
+
+        if (userOpt.isPresent()) {
+            User user = userOpt.get();
+            
+            // 3. Security Check: Status, Deleted, Lockouts
+            if (Boolean.TRUE.equals(user.getIsDeleted())) {
+                throw new AuthException(HttpStatus.GONE, "This account has been deleted.");
+            }
+
+            // Check Admin Approval Status (Blocking)
+            if (!"APPROVED".equals(user.getApprovalStatus())) {
+                throw new AuthException(HttpStatus.FORBIDDEN, 
+                        "Wait for admin approval your profile created");
+            }
+
+            // Only allow token rotation for ACTIVE or BLOCK (read-only) accounts
+            String statusId = user.getUserStatus() != null ? user.getUserStatus().getUserStatusId() : "ACTIVE";
+            if (!"ACTIVE".equals(statusId) && !"BLOCK".equals(statusId)) {
+                throw new AuthException(HttpStatus.FORBIDDEN,
+                        "Account status does not allow session rotation.");
+            }
+
+            // 4. Device Security & Trust Logic
+            final String finalDeviceId = request.getDeviceId();
+            if (finalDeviceId == null || finalDeviceId.trim().isEmpty()) {
+                throw new AuthException(HttpStatus.BAD_REQUEST, "DEVICE_ID_REQUIRED: deviceId is required.");
+            }
+
+            boolean isDeviceTrusted = deviceService.isDeviceTrusted(user, finalDeviceId);
+            boolean hasOtherTrustedDevices = deviceService.hasAnyTrustedDevice(user.getUserId());
+            boolean shouldTrustThisDevice = false;
+
+            if (isDeviceTrusted) {
+                shouldTrustThisDevice = true;
+            } else {
+                if (!hasOtherTrustedDevices) {
+                    // First login on new device/cleared devices
+                    shouldTrustThisDevice = true;
+                } else {
+                    // Trigger New Device Verification Flow
+                    List<UserDevice> allUserDevices = userDeviceRepository.findByUser_UserId(user.getUserId());
+                    List<UserDevice> trustedDevices = allUserDevices.stream()
+                            .filter(d -> Boolean.TRUE.equals(d.getIsTrusted()))
+                            .toList();
+
+                    for (UserDevice td : trustedDevices) {
+                        notificationService.sendNotification(td.getPushToken(),
+                                "New Login Attempt",
+                                "Security Alert: Firebase login from a new device.",
+                                "LOGIN_APPROVAL_REQUEST",
+                                "{\"targetDeviceId\": \"" + finalDeviceId + "\"}");
+                    }
+
+                    if (user.getEmail() != null && !user.getEmail().isEmpty()) {
+                        String[] otpResponse = otpService.generateOtp(user.getEmail(), OtpType.NEW_DEVICE_VERIFICATION);
+                        String temporaryToken = jwtTokenProvider.createRegistrationToken(sanitizedMobile,
+                                user.getEmail(), "DEVICE_APPROVAL_REQUIRED", otpResponse[1]);
+
+                        throw new live.chronogram.auth.exception.DeviceApprovalRequiredException(
+                                "APPROVAL_REQUIRED: Security OTP sent to email.", maskEmail(user.getEmail()), temporaryToken, otpResponse[0]);
+                    } else {
+                        throw new live.chronogram.auth.exception.EmailLinkingRequiredException(
+                                "EMAIL_REQUIRED: No email registered for new device verification.");
+                    }
+                }
+            }
+
+            // 5. Handle Login Flow
+            logger.info("Firebase login success for user: {}", sanitizedMobile);
+            return completeLoginAndIssueTokens(user, finalDeviceId, request.getSimSerial(), request.getPushToken(),
+                    request.getDeviceName(), request.getDeviceModel(), request.getOsName(), request.getOsVersion(),
+                    request.getAppVersion(), request.getLatitude(), request.getLongitude(), request.getCountry(),
+                    request.getCity(), ipAddress, userAgent, shouldTrustThisDevice);
+        } else {
+            // 5. Handle Registration Flow (Incomplete Profile)
+            logger.info("Firebase verification for new/incomplete user: {}", sanitizedMobile);
+            
+            // Issue a registration token to proceed with Email verification
+            // This ensures Firebase users still follow the full registration flow (Email -> Profile)
+            String registrationToken = jwtTokenProvider.createRegistrationToken(sanitizedMobile, null, "EMAIL_REQUIRED", null);
+            
+            return new TokenResponse(registrationToken, null, "Firebase verification successful. Please verify your email to proceed.");
+        }
     }
 
     private String validateAndFormatEmail(String email) {
@@ -885,12 +1858,134 @@ public class AuthService {
         }
 
         // Stronger email regex: restricts special characters and ensures standard
-        // domains. Also limits local-part (before @) to Max 64 characters.
+        // domains.
         String emailRegex = "^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]+\\.[A-Za-z]{2,20}$";
         if (!trimmedEmail.matches(emailRegex)) {
             throw new RuntimeException("Invalid email format.");
         }
 
         return trimmedEmail;
+    }
+
+    /**
+     * Helper to track incomplete registration progress.
+     */
+    private void saveIncompleteRegistration(String mobileNumber, String step, String email, String name,
+            String deviceId, String deviceName, String deviceModel, String osName, String osVersion, String ipAddress,
+            Double latitude, Double longitude, String city, String country) {
+        try {
+            live.chronogram.auth.model.IncompleteRegistration reg = incompleteRegistrationRepository.findByMobileNumber(mobileNumber)
+                    .orElse(new live.chronogram.auth.model.IncompleteRegistration());
+            
+            reg.setMobileNumber(mobileNumber);
+            reg.setLastStep(step);
+            if (email != null) reg.setEmail(email);
+            if (name != null) reg.setName(name);
+
+            if (deviceId != null) reg.setDeviceId(deviceId);
+            if (deviceName != null) reg.setDeviceName(deviceName);
+            if (deviceModel != null) reg.setDeviceModel(deviceModel);
+            if (osName != null) reg.setOsName(osName);
+            if (osVersion != null) reg.setOsVersion(osVersion);
+            if (ipAddress != null) reg.setIpAddress(ipAddress);
+            if (latitude != null) reg.setLatitude(latitude);
+            if (longitude != null) reg.setLongitude(longitude);
+            if (city != null) reg.setCity(city);
+            if (country != null) reg.setCountry(country);
+
+            incompleteRegistrationRepository.save(reg);
+            logger.debug("Tracked incomplete registration step: {} for mobile: {}", step, mobileNumber);
+        } catch (Exception e) {
+            logger.error("Failed to track incomplete registration: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Aggregates storage usage from image and video services.
+     */
+    public live.chronogram.auth.dto.StorageUsageResponse getStorageUsage(Long userId) {
+        String imageServiceUrl = "http://localhost:8082/internal/storage/user/" + userId;
+        String videoServiceUrl = "http://localhost:8083/internal/storage/user/" + userId;
+
+        live.chronogram.auth.dto.ServiceStorageInfo imageInfo = new live.chronogram.auth.dto.ServiceStorageInfo(0, 0);
+        live.chronogram.auth.dto.ServiceStorageInfo videoInfo = new live.chronogram.auth.dto.ServiceStorageInfo(0, 0);
+
+        try {
+            imageInfo = restTemplate.getForObject(imageServiceUrl, live.chronogram.auth.dto.ServiceStorageInfo.class);
+        } catch (Exception e) {
+            logger.warn("Failed to fetch image storage usage for user {}: {}", userId, e.getMessage());
+        }
+
+        try {
+            videoInfo = restTemplate.getForObject(videoServiceUrl, live.chronogram.auth.dto.ServiceStorageInfo.class);
+        } catch (Exception e) {
+            logger.warn("Failed to fetch video storage usage for user {}: {}", userId, e.getMessage());
+        }
+
+        // Aggregate and convert to GB
+        long totalBytes = (imageInfo != null ? imageInfo.getTotalBytes() : 0) + 
+                         (videoInfo != null ? videoInfo.getTotalBytes() : 0);
+        Double usedGb = totalBytes / (1024.0 * 1024.0 * 1024.0);
+        
+        // Match StorageService logic: 10GB limit, 9GB warning
+        Double limit = 10.0;
+        
+        // Simple rounding (inline for minimal dependencies)
+        usedGb = Math.round(usedGb * 100.0) / 100.0;
+        boolean warning = usedGb >= 9.0;
+
+        return new live.chronogram.auth.dto.StorageUsageResponse(usedGb, limit, "GB", warning);
+    }
+
+    /**
+     * Internal helper to update registration progress tracking.
+     */
+    @Transactional
+    public void updateRegistrationProgress(Long userId, String step) {
+        RegistrationProgress progress = registrationProgressRepository.findById(userId)
+                .orElse(new RegistrationProgress(userId));
+        
+        switch (step) {
+            case "OTP_SENT" -> progress.setOtpSent(true);
+            case "OTP_VERIFIED" -> progress.setOtpVerified(true);
+            case "PROFILE_CREATED" -> progress.setProfileCreated(true);
+            case "DEVICE_REGISTERED" -> progress.setDeviceRegistered(true);
+            case "SYNC_ENABLED" -> progress.setSyncEnabled(true);
+            case "ACTIVE" -> {
+                progress.setCompleted(true);
+                User user = userRepository.findById(userId).orElse(null);
+                if (user != null) {
+                    user.setRegistrationStatus("ACTIVE");
+                    userRepository.save(user);
+                }
+            }
+        }
+        registrationProgressRepository.save(progress);
+    }
+
+    /**
+     * Nightly cleanup: Removes incomplete registrations older than 48 hours.
+     */
+    @Scheduled(cron = "0 0 2 * * *") // Runs every night at 2 AM
+    @Transactional
+    public void cleanupAbandonedRegistrations() {
+        LocalDateTime cutoff = LocalDateTime.now().minusDays(2);
+        
+        // Find users who haven't completed registration and are older than 2 days
+        List<User> abandonedUsers = userRepository.findAll().stream()
+                .filter(u -> !"ACTIVE".equals(u.getRegistrationStatus()) && 
+                             u.getCreatedTimestamp().isBefore(cutoff))
+                .toList();
+
+        if (!abandonedUsers.isEmpty()) {
+            logger.info("Cleaning up {} abandoned registrations", abandonedUsers.size());
+            for (User user : abandonedUsers) {
+                // Remove sync status, storage usage, etc.
+                syncStatusRepository.deleteById(user.getUserId());
+                storageUsageRepository.deleteById(user.getUserId());
+                registrationProgressRepository.deleteById(user.getUserId());
+                userRepository.delete(user);
+            }
+        }
     }
 }

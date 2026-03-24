@@ -2,11 +2,33 @@ package live.chronogram.auth.dto;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
+/**
+ * Data Transfer Object containing authentication tokens (Access and Refresh).
+ * Returned upon successful login, registration completion, or token refresh.
+ */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class TokenResponse {
+    /**
+     * Short-lived Access Token (JWT).
+     * Logic: Signed with the secret key and contains user identity. Expire in 1 hour usually.
+     */
     private String accessToken;
+
+    /**
+     * Long-lived Refresh Token (Hashed in DB).
+     * Logic: Exchanged for new Access Tokens. Valid for 30 days usually.
+     */
     private String refreshToken;
+
+    /**
+     * The type of token.
+     * Logic: Always "Bearer" to follow OAuth2 standards.
+     */
     private String tokenType = "Bearer";
+
+    /**
+     * Optional status/error message for the frontend to display.
+     */
     private String message;
 
     public TokenResponse(String accessToken, String refreshToken) {

@@ -1,9 +1,19 @@
 package live.chronogram.auth.dto;
 
+/**
+ * Data Transfer Object for general email verification requests.
+ */
 public class VerifyEmailRequest {
     private String mobileNumber;
     private String email;
+    /**
+     * The OTP code received via email.
+     */
     private String otp;
+
+    /**
+     * Optional token to bind the verification to a specific registration session.
+     */
     private String registrationToken;
 
     public String getMobileNumber() {

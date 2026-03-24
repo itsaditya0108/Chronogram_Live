@@ -4,6 +4,11 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 import org.hibernate.annotations.CreationTimestamp;
 
+/**
+ * Entity representing a historical record of a Login Attempt.
+ * Stores technical and geographical metadata for security monitoring and audit
+ * trails.
+ */
 @Entity
 @Table(name = "login_history", indexes = {
         @Index(name = "idx_login_history_user", columnList = "user_id"),
@@ -16,9 +21,15 @@ public class LoginHistory {
     @Column(name = "login_history_id")
     private Long loginHistoryId;
 
+    /**
+     * ID of the user who attempted to login.
+     */
     @Column(name = "user_id")
     private Long userId;
 
+    /**
+     * IPv4 or IPv6 address of the client.
+     */
     @Column(name = "ip_address", length = 45)
     private String ipAddress;
 
@@ -47,11 +58,20 @@ public class LoginHistory {
     private Double longitude;
     private Integer accuracy;
 
+    /**
+     * Whether the login attempt was successful.
+     */
     private Boolean success;
 
+    /**
+     * If failed, the reason for failure (e.g., "INVALID_OTP", "LOCKED").
+     */
     @Column(name = "failure_reason", length = 100)
     private String failureReason;
 
+    /**
+     * Audit field: recorded when the login attempt occurred.
+     */
     @CreationTimestamp
     @Column(name = "created_timestamp", updatable = false)
     private LocalDateTime createdTimestamp;

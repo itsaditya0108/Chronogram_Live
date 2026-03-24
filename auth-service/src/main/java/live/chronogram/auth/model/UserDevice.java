@@ -4,7 +4,14 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
+/**
+ * Entity representing a physical or virtual Device associated with a User.
+ * Tracks hardware identifiers, OS/App versions, and trust status for security
+ * purposes.
+ */
 @Entity
 @Table(name = "user_devices")
 public class UserDevice {
@@ -14,16 +21,28 @@ public class UserDevice {
     @Column(name = "user_device_id")
     private Long userDeviceId;
 
+    /**
+     * The User who owns/uses this device.
+     */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
+    /**
+     * Unique hardware or software identifier (e.g., Android ID, IDFV).
+     */
     @Column(name = "device_id", nullable = false)
     private String deviceId;
 
+    /**
+     * Human-readable name given to the device (e.g., "My iPhone").
+     */
     @Column(name = "device_name", length = 100)
     private String deviceName;
 
+    /**
+     * Specific hardware model (e.g., "iPhone 15 Pro", "Pixel 8").
+     */
     @Column(name = "device_model", length = 100)
     private String deviceModel;
 
@@ -36,26 +55,49 @@ public class UserDevice {
     @Column(name = "app_version", length = 50)
     private String appVersion;
 
+    /**
+     * Indicates if the device is trusted by the user (usually after successul 2FA).
+     * Trusted devices may bypass certain security prompts.
+     */
     @Column(name = "is_trusted")
     private Boolean isTrusted;
 
+    /**
+     * Hex-encoded SHA-256 hash of the SIM serial number for strict binding.
+     */
     @Column(name = "sim_serial_hash", length = 255)
     private String simSerialHash;
 
+    /**
+     * Firebase Cloud Messaging (FCM) or APNs token for push notifications.
+     */
     @Column(name = "push_token", columnDefinition = "TEXT")
-    private String pushToken; // For FCM/APNS
+    private String pushToken;
 
+    /**
+     * Audit field: recorded when the app was first installed/registered on this
+     * device.
+     */
     @CreationTimestamp
     @Column(name = "first_install_timestamp", updatable = false)
     private LocalDateTime firstInstallTimestamp;
 
+    /**
+     * Audit field: updated every time the user logs in from this device.
+     */
     @UpdateTimestamp
     @Column(name = "last_login_timestamp")
     private LocalDateTime lastLoginTimestamp;
 
+    /**
+     * Last known latitude of the device during a security event (e.g., login).
+     */
     @Column(name = "latitude")
     private Double latitude;
 
+    /**
+     * Last known longitude of the device during a security event.
+     */
     @Column(name = "longitude")
     private Double longitude;
 
@@ -78,12 +120,19 @@ public class UserDevice {
         this.userDeviceId = userDeviceId;
     }
 
+    @JsonIgnore
     public User getUser() {
         return user;
     }
 
+    @JsonIgnore
     public void setUser(User user) {
         this.user = user;
+    }
+
+    @JsonProperty("userId")
+    public Long getUserId() {
+        return user != null ? user.getUserId() : null;
     }
 
     public String getDeviceId() {

@@ -1,28 +1,85 @@
 package live.chronogram.auth.dto;
 
+/**
+ * Data Transfer Object for authentication and login requests.
+ * Supports both standard OTP login and recovery flows for lost devices.
+ */
 public class LoginRequest {
+    /**
+     * User's mobile number. Must be unique in the system.
+     * Logic: Standardized via sanitizePhoneNumber() before lookup.
+     */
     private String mobileNumber;
+
+    /**
+     * Mobile OTP code. 
+     * Logic: Verified against OtpVerification table with 5-attempt lockout.
+     */
     private String otpCode;
-    // For lost device recovery flow
+
+    /**
+     * Session anchor.
+     * Logic: Ensures the 'verify' call is coming from the same device/intent that triggered 'send-otp'.
+     */
+    private String otpSessionToken;
+
+    /**
+     * Email OTP code.
+     * Logic: Required only if the device is new/untrusted or in recovery mode.
+     */
     private String emailOtpCode;
+
+    /**
+     * Physical device identifier (e.g., Android ID or iOS UUID).
+     * Logic: Used to determine if the device is 'Trusted' or needs secondary email approval.
+     */
     private String deviceId;
+
+    /**
+     * SIM Hardware ID.
+     * Logic: Provides an extra layer of binding to prevent account takeover via remote emulators.
+     */
     private String simSerial;
-    private String pushToken; // For FCM
-    private String deviceName;
-    private String deviceModel;
-    private String osName;
-    private String osVersion;
-    private String appVersion;
+
+    /**
+     * Cloud messaging token.
+     * Logic: Stored in UserDevice to enable push notifications (FCM/APNS).
+     */
+    private String pushToken;
+
+    private String deviceName;  // e.g., "Aditya's iPhone"
+    private String deviceModel; // e.g., "iPhone 13 Pro"
+    private String osName;      // e.g., "iOS"
+    private String osVersion;   // e.g., "16.4"
+    private String appVersion;  // e.g., "1.0.5"
+    
+    // Geolocation data for audit logging and security alerts
     private Double latitude;
     private Double longitude;
 
-    // Flags
+    /**
+     * Recovery trigger.
+     * Logic: If true, the system bypasses 'Trusted Device' checks and forces Email OTP verification.
+     */
     private boolean isRecoveryFlow;
 
     private String country;
     private String city;
 
+    /**
+     * Firebase ID Token for external authentication verification.
+     */
+    private String firebaseIdToken;
+
     // Getters and Setters
+    public String getFirebaseIdToken() {
+        return firebaseIdToken;
+    }
+
+    public void setFirebaseIdToken(String firebaseIdToken) {
+        this.firebaseIdToken = firebaseIdToken;
+    }
+
     public String getMobileNumber() {
         return mobileNumber;
     }
@@ -37,6 +94,14 @@ public class LoginRequest {
 
     public void setOtpCode(String otpCode) {
         this.otpCode = otpCode;
+    }
+
+    public String getOtpSessionToken() {
+        return otpSessionToken;
+    }
+
+    public void setOtpSessionToken(String otpSessionToken) {
+        this.otpSessionToken = otpSessionToken;
     }
 
     public String getEmailOtpCode() {

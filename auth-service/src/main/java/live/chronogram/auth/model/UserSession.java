@@ -4,6 +4,10 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 import org.hibernate.annotations.CreationTimestamp;
 
+/**
+ * Entity representing an active Login Session for a User on a specific Device.
+ * Primarily used for managing JWT Refresh Tokens and session revocation.
+ */
 @Entity
 @Table(name = "user_sessions")
 public class UserSession {
@@ -21,12 +25,22 @@ public class UserSession {
     @JoinColumn(name = "user_device_id")
     private UserDevice userDevice;
 
+    /**
+     * Hex-encoded SHA-256 hash of the Refresh Token.
+     * Stored as a hash for security in case of database breach.
+     */
     @Column(name = "refresh_token_hash", nullable = false, unique = true)
     private String refreshTokenHash;
 
+    /**
+     * IP address from which the session started.
+     */
     @Column(name = "ip_address")
     private String ipAddress;
 
+    /**
+     * Browser or App user agent string.
+     */
     @Column(name = "user_agent", columnDefinition = "TEXT")
     private String userAgent;
 
@@ -36,12 +50,22 @@ public class UserSession {
     private Double longitude;
     private Integer accuracy;
 
+    /**
+     * If true, the session has been revoked (logout or security breach)
+     * and the refresh token is no longer valid.
+     */
     @Column(name = "is_revoked")
     private Boolean isRevoked;
 
+    /**
+     * Timestamp when this session (refresh token) expires.
+     */
     @Column(name = "expires_timestamp", nullable = false)
     private LocalDateTime expiresTimestamp;
 
+    /**
+     * Audit field: recorded when the session was created.
+     */
     @CreationTimestamp
     @Column(name = "created_timestamp", updatable = false)
     private LocalDateTime createdTimestamp;
