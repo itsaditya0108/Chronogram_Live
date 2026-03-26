@@ -21,7 +21,7 @@ public class CorsConfig {
                         .allowedOrigins(
                                 "http://localhost:8082", // Local Auth App
                                 "http://127.0.0.1:8082", // Local IP
-                                "http://192.168.1.5:8082") // Network IP
+                                "http://192.168.1.3:8082") // Network IP
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS") // Allowed HTTP methods
                         .allowedHeaders("*") // Allow all headers
                         .allowCredentials(true); // Allow sending cookies/credentials

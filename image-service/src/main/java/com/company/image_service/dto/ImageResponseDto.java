@@ -10,9 +10,10 @@ public class ImageResponseDto {
     private long fileSize;
     private LocalDateTime createdAt;
     private String imageUrl;
-    private String thumbnailUrl;  // 🔥 new
-
-    // getters & setters
+    private String thumbnailUrl;
+    private String status; // UPLOADED, ALREADY_EXISTS, etc.
+    private Integer width;
+    private Integer height;
 
     public Long getId() {
         return id;
@@ -68,5 +69,29 @@ public class ImageResponseDto {
 
     public void setThumbnailUrl(String thumbnailUrl) {
         this.thumbnailUrl = thumbnailUrl;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public Integer getWidth() {
+        return width;
+    }
+
+    public void setWidth(Integer width) {
+        this.width = width;
+    }
+
+    public Integer getHeight() {
+        return height;
+    }
+
+    public void setHeight(Integer height) {
+        this.height = height;
     }
 }

@@ -1,224 +1,124 @@
-package com.company.image_service.controller; // Package for REST controllers
+package com.company.image_service.controller;
 
-import com.company.image_service.dto.ImageResponseDto; // DTO for image response
-import com.company.image_service.dto.PageResponseDto; // DTO for paginated response
-import com.company.image_service.entity.Image; // Image entity
-import com.company.image_service.mapper.ImageMapper; // Mapper for converting entities to DTOs
-import com.company.image_service.service.ImageService; // Service for image operations
-import jakarta.servlet.http.HttpServletRequest; // HTTP Request object
-import org.springframework.core.io.Resource; // Resource interface for file downloads
-import org.springframework.data.domain.Page; // Page interface for pagination
-import org.springframework.data.domain.Pageable; // Pageable interface for pagination info
-import org.springframework.data.domain.Sort; // Sort options
-import org.springframework.data.web.PageableDefault; // Default pagination settings annotation
-import org.springframework.http.HttpHeaders; // HTTP Headers
-import org.springframework.http.MediaType; // Media Type constants
-import org.springframework.http.ResponseEntity; // HTTP Response Entity
-import org.springframework.web.bind.annotation.*; // Spring Web annotations
-import org.springframework.web.multipart.MultipartFile; // Multipart file support
+import com.company.image_service.dto.ImageBulkUploadResponseDto;
+import com.company.image_service.dto.ImageResponseDto;
+import com.company.image_service.service.IImageService;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.Resource;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
-import java.util.List; // List utility
-
-@RestController // Marks this class as a REST controller
-@RequestMapping("/api/images") // Base URL path for image endpoints
+@RestController
+@RequestMapping("/api/images")
 public class ImageController {
 
-    private final ImageService imageService; // Service dependency
+    private final IImageService imageService;
 
-    // Constructor injection for ImageService
-    public ImageController(ImageService imageService) {
+    @Autowired
+    public ImageController(IImageService imageService) {
         this.imageService = imageService;
     }
 
-    // ----------------------------
-    // Single upload
-    // ----------------------------
-    /**
-     * Endpoint to upload a single image.
-     * URL: POST /api/images
-     */
-    @PostMapping
-    public ImageResponseDto upload(
-            @RequestParam("file") MultipartFile file, // The image file
-            @RequestParam(value = "type", defaultValue = "personal") String type, // Image type (default: personal)
-            HttpServletRequest request) {
-
-        try {
-            // Debug logging for upload request
-            System.out.println(
-                    "DEBUG: Upload request received. Type: " + type + ", UserId: " + request.getAttribute("userId"));
-
-            // Extract user ID from request attributes (set by JwtAuthenticationFilter)
-            Long userId = (Long) request.getAttribute("userId");
-            if (userId == null) {
-                throw new RuntimeException("User ID not found in request. Auth filter might be failing.");
-            }
-
-            // Call service to upload image
-            Image image = imageService.uploadImage(userId, file, type);
-            // Convert result to DTO and return
-            return ImageMapper.toDto(image);
-
-        } catch (Exception e) {
-            e.printStackTrace(); // Log stack trace for debugging
-            throw new RuntimeException("Upload failed: " + e.getMessage(), e); // Re-throw as RuntimeException
+    private Long getUserId(HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        if (userId == null) {
+            throw new RuntimeException("User not authenticated");
         }
+        return userId;
     }
 
-    // ----------------------------
-    // Multi upload
-    // ----------------------------
     /**
-     * Endpoint to upload multiple images at once.
-     * URL: POST /api/images/bulk
+     * POST /api/images/bulk (As per TESTING_GUIDE.md)
      */
     @PostMapping("/bulk")
-    public ResponseEntity<List<Image>> uploadImages(
-            @RequestParam("files") List<MultipartFile> files, // List of image files
-            HttpServletRequest request) {
-        Long userId = (Long) request.getAttribute("userId"); // Get authenticated user ID
+    public ResponseEntity<ImageBulkUploadResponseDto> bulkUpload(
+            HttpServletRequest request,
+            @RequestParam("files") MultipartFile[] files,
+            @RequestParam(value = "type", defaultValue = "personal") String type) {
 
-        // Call service to upload multiple images and return the list of created
-        // entities
-        return ResponseEntity.ok(
-                imageService.uploadImages(userId, files));
+        Long userId = getUserId(request);
+        if (files == null || files.length == 0) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        ImageBulkUploadResponseDto response = imageService.executeBulkUpload(userId, files, type);
+        return ResponseEntity.ok(response);
     }
 
-    // ----------------------------
-    // List images
-    // ----------------------------
-    // @GetMapping
-    // public Page<ImageResponseDto> getImages(
-    // Pageable pageable,
-    // HttpServletRequest request
-    // ) {
-    // Long userId = (Long) request.getAttribute("userId");
-    //
-    // return imageService.getUserImages(userId, pageable)
-    // .map(ImageMapper::toDto);
-    // }
-
     /**
-     * Endpoint to retrieve a paginated list of user's images.
-     * URL: GET /api/images
-     * Supports filtering by 'type' (e.g., 'personal', 'chat', 'all').
+     * GET /api/images (As per TESTING_GUIDE.md)
      */
     @GetMapping
-    public PageResponseDto<ImageResponseDto> getImages(
-            @RequestParam(required = false, defaultValue = "all") String type, // Filter param: 'all', 'personal',
-                                                                               // 'chat'
-            @PageableDefault(size = 20, sort = "createdTimestamp", direction = Sort.Direction.DESC) Pageable pageable, // Default
-                                                                                                                       // pagination:
-                                                                                                                       // 20
-                                                                                                                       // items,
-                                                                                                                       // newest
-                                                                                                                       // first
-            HttpServletRequest request) {
-        Long userId = (Long) request.getAttribute("userId"); // Get authenticated user ID
-
-        // Fetch paginated images from service
-        Page<ImageResponseDto> page = imageService
-                .getUserImages(userId, type, pageable) // Pass filter type and pagination info
-                .map(ImageMapper::toDto); // Convert entities to DTOs
-
-        // Return structured page response
-        return new PageResponseDto<>(
-                page.getContent(),
-                page.getNumber(),
-                page.getSize(),
-                page.getTotalElements(),
-                page.getTotalPages(),
-                page.isLast());
-    }
-
-    // ----------------------------
-    // Download image
-    // ----------------------------
-    // @GetMapping("/{id}/download")
-    // public ResponseEntity<Resource> download(
-    // @PathVariable Long id,
-    // HttpServletRequest request
-    // ) {
-    // Long userId = (Long) request.getAttribute("userId");
-    //
-    // Image image = imageService.getUserImage(id, userId);
-    // Resource resource = imageService.downloadImage(id, userId);
-    //
-    // return ResponseEntity.ok()
-    // .contentType(MediaType.parseMediaType(image.getContentType()))
-    // .header(HttpHeaders.CONTENT_DISPOSITION, "inline")
-    // .body(resource);
-    // }
-
-    @GetMapping("/{id}/download")
-    public ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> download(
-            @PathVariable Long id) {
-        // DEV: no userId, no ownership check
-        Image image = imageService.getImageById(id); // Retrieve image metadata
-
-        org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody stream = imageService
-                .streamDecryptedImage(id, image.getUserId(), false);
-
-        return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType(image.getContentType())) // Set correct MIME type
-                .header(HttpHeaders.CONTENT_DISPOSITION, "inline") // Display inline (browser handles rendering)
-                .body(stream);
+    public ResponseEntity<Page<ImageResponseDto>> getImages(
+            HttpServletRequest request,
+            @RequestParam(value = "type", defaultValue = "all") String type,
+            @RequestParam(value = "page", defaultValue = "0") int page,
+            @RequestParam(value = "size", defaultValue = "20") int size) {
+        
+        Long userId = getUserId(request);
+        return ResponseEntity.ok(imageService.getUserImages(userId, type, PageRequest.of(page, size)));
     }
 
     /**
-     * Endpoint to soft-delete an image.
-     * URL: DELETE /api/images/{id}
+     * GET /api/images/{imageId}/download (As per TESTING_GUIDE.md)
      */
-    @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(
-            @PathVariable Long id,
-            HttpServletRequest request) {
-        Long userId = (Long) request.getAttribute("userId"); // Get authenticated user ID
-
-        if (userId == null) {
-            throw new RuntimeException("Unauthorized"); // Security check
-        }
-
-        imageService.softDeleteImage(id, userId); // Perform soft delete
-        return ResponseEntity.noContent().build(); // Return 204 No Content
-    }
-
-    @GetMapping("/{id}/thumbnail")
-    public ResponseEntity<org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody> downloadThumbnail(
-            @PathVariable Long id,
-            HttpServletRequest request) {
-        Long userId = (Long) request.getAttribute("userId");
-        if (userId == null) {
-            throw new RuntimeException("Unauthorized");
-        }
-
-        org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody stream = imageService
-                .streamDecryptedImage(id, userId, true);
-
-        return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_TYPE, "image/*") // Set generic image content type
-                .body(stream);
+    @GetMapping("/{imageId}/download")
+    public ResponseEntity<Resource> downloadImage(
+            HttpServletRequest request,
+            @PathVariable Long imageId) {
+        Long userId = getUserId(request);
+        return ResponseEntity.ok(imageService.downloadImage(imageId, userId));
     }
 
     /**
-     * Endpoint to validate if an image exists and belongs to the user.
-     * URL: GET /api/images/{id}/validate
+     * GET /api/images/{imageId}/thumbnail (As per TESTING_GUIDE.md)
      */
-    @GetMapping("/{id}/validate")
-    public ResponseEntity<java.util.Map<String, Boolean>> validateImage(
-            @PathVariable Long id,
-            HttpServletRequest request) {
-        Long userId = (Long) request.getAttribute("userId");
-        if (userId == null) {
-            return ResponseEntity.status(401).build(); // Return 401 Unauthorized
-        }
-
-        boolean isValid = imageService.validateImage(id, userId); // Check validity
-        if (!isValid) {
-            return ResponseEntity.status(404).body(java.util.Map.of("valid", false)); // Return 404 if invalid
-        }
-
-        return ResponseEntity.ok(java.util.Map.of("valid", true)); // Return 200 OK if valid
+    @GetMapping("/{imageId}/thumbnail")
+    public ResponseEntity<Resource> downloadThumbnail(
+            HttpServletRequest request,
+            @PathVariable Long imageId) {
+        Long userId = getUserId(request);
+        return ResponseEntity.ok(imageService.downloadThumbnail(imageId, userId));
     }
 
+    /**
+     * GET /api/images/{imageId}/stream (As per TESTING_GUIDE.md)
+     */
+    @GetMapping("/{imageId}/stream")
+    public ResponseEntity<StreamingResponseBody> streamImage(
+            HttpServletRequest request,
+            @PathVariable Long imageId,
+            @RequestParam(value = "thumbnail", defaultValue = "false") boolean thumbnail) {
+        Long userId = getUserId(request);
+        StreamingResponseBody body = imageService.streamDecryptedImage(imageId, userId, thumbnail);
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(body);
+    }
+
+    /**
+     * GET /api/images/{imageId}/variants/{type} (As per TESTING_GUIDE.md)
+     */
+    @GetMapping("/{imageId}/variants/{type}")
+    public ResponseEntity<Resource> getVariant(
+            HttpServletRequest request,
+            @PathVariable Long imageId,
+            @PathVariable String type) {
+        Long userId = getUserId(request);
+        // This is a simple implementation; real variants might need more logic
+        String path = imageService.resolveVariantPath(imageId, type);
+        // Note: resolveVariantPath just returns a path. We might need a better way to stream it.
+        // For now, redirecting to existing download if it's main or thumb
+        if ("thumb".equalsIgnoreCase(type) || "thumbnail".equalsIgnoreCase(type)) {
+            return downloadThumbnail(request, imageId);
+        }
+        return downloadImage(request, imageId);
+    }
 }

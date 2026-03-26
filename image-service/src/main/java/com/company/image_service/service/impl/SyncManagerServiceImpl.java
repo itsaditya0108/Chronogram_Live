@@ -6,6 +6,7 @@ import com.company.image_service.repository.SyncSessionRepository;
 import com.company.image_service.repository.UploadSessionRepository;
 import com.company.image_service.service.SyncManagerService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,15 +19,26 @@ public class SyncManagerServiceImpl implements SyncManagerService {
 
     private final SyncSessionRepository syncRepository;
     private final UploadSessionRepository uploadRepository;
+    private final com.company.image_service.repository.ImageRepository imageRepository;
 
-    // Quotas (In a real app, these would come from application.yml or a config DB)
-    private static final long MAX_DAILY_UPLOAD_BYTES = 5L * 1024 * 1024 * 1024; // 5GB
-    private static final int MAX_CONCURRENT_UPLOADS = 3;
+    @Value("${image.upload.max-daily-bytes:10737418240}") // 10GB default
+    private long maxDailyUploadBytes;
+
+    @Value("${image.upload.max-concurrent:20}") // 20 default
+    private int maxConcurrentUploads;
+
+    @Value("${image.upload.session-expiry-hours:1}") // 1 hour default
+    private int sessionExpiryHours;
+
+    @Value("${image.storage.quota-bytes:10737418240}")
+    private long maxGlobalQuota;
 
     @Autowired
-    public SyncManagerServiceImpl(SyncSessionRepository syncRepository, UploadSessionRepository uploadRepository) {
+    public SyncManagerServiceImpl(SyncSessionRepository syncRepository, UploadSessionRepository uploadRepository,
+            com.company.image_service.repository.ImageRepository imageRepository) {
         this.syncRepository = syncRepository;
         this.uploadRepository = uploadRepository;
+        this.imageRepository = imageRepository;
     }
 
     @Override
@@ -35,8 +47,9 @@ public class SyncManagerServiceImpl implements SyncManagerService {
         if (triggerType == SyncSession.TriggerType.AUTO_WIFI) {
             // Enforce 24-hour rule for AUTO syncs
             LocalDateTime twentyFourHoursAgo = LocalDateTime.now().minusHours(24);
-            Optional<SyncSession> recentSession = syncRepository.findRecentSession(
-                    userId, SyncSession.SyncStatus.COMPLETED, twentyFourHoursAgo);
+            Optional<SyncSession> recentSession = syncRepository
+                    .findFirstByUserIdAndStatusAndStartedAtAfterOrderByStartedAtDesc(
+                            userId, SyncSession.SyncStatus.COMPLETED, twentyFourHoursAgo);
 
             if (recentSession.isPresent()) {
                 throw new IllegalStateException("An auto-sync has already completed in the last 24 hours.");
@@ -68,12 +81,17 @@ public class SyncManagerServiceImpl implements SyncManagerService {
 
     @Override
     public boolean canStartUpload(Long userId, Long fileSize) {
-        // 1. Check concurrent limitations
-        long activeUploads = uploadRepository.countByUserIdAndStatusIn(
-                userId, Arrays.asList(UploadSession.UploadStatus.INITIATED, UploadSession.UploadStatus.UPLOADING,
-                        UploadSession.UploadStatus.MERGING));
+        // 1. Check concurrent limitations (Exclude sessions older than
+        // sessionExpiryHours)
+        LocalDateTime cutoff = LocalDateTime.now().minusHours(sessionExpiryHours);
 
-        if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
+        long activeUploads = uploadRepository.countActiveSessions(
+                userId,
+                Arrays.asList(UploadSession.UploadStatus.INITIATED, UploadSession.UploadStatus.UPLOADING,
+                        UploadSession.UploadStatus.MERGING),
+                cutoff);
+
+        if (activeUploads >= maxConcurrentUploads) {
             return false;
         }
 
@@ -82,7 +100,13 @@ public class SyncManagerServiceImpl implements SyncManagerService {
         long dailyUploadedBytes = uploadRepository.sumFileSizeByUserIdAndStatusAndCreatedAtAfter(
                 userId, Arrays.asList(UploadSession.UploadStatus.COMPLETED), twentyFourHoursAgo);
 
-        if (dailyUploadedBytes + fileSize > MAX_DAILY_UPLOAD_BYTES) {
+        if (dailyUploadedBytes + fileSize > maxDailyUploadBytes) {
+            return false;
+        }
+
+        // 3. Check TOTAL storage quota
+        long currentTotalUsed = imageRepository.getTotalGlobalStorageByUser(userId);
+        if (currentTotalUsed + fileSize > maxGlobalQuota) {
             return false;
         }
 

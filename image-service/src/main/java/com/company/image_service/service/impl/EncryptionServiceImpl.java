@@ -35,6 +35,13 @@ public class EncryptionServiceImpl implements EncryptionService {
 
     @Override
     public void encryptAndSave(InputStream inputStream, Path destinationPath) throws Exception {
+        try (OutputStream os = Files.newOutputStream(destinationPath, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
+            encryptAndSave(inputStream, os);
+        }
+    }
+
+    @Override
+    public void encryptAndSave(InputStream inputStream, OutputStream outputStream) throws Exception {
         byte[] iv = new byte[GCM_IV_LENGTH];
         new SecureRandom().nextBytes(iv);
 
@@ -42,41 +49,45 @@ public class EncryptionServiceImpl implements EncryptionService {
         GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
         cipher.init(Cipher.ENCRYPT_MODE, getSecretKey(), parameterSpec);
 
-        try (OutputStream os = Files.newOutputStream(destinationPath, StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING)) {
-            // Write IV to the beginning of the file
-            os.write(iv);
+        // Write IV to the beginning of the output stream
+        outputStream.write(iv);
 
-            try (CipherOutputStream cos = new CipherOutputStream(os, cipher)) {
-                byte[] buffer = new byte[8192];
-                int read;
-                while ((read = inputStream.read(buffer)) != -1) {
-                    cos.write(buffer, 0, read);
-                }
+        try (CipherOutputStream cos = new CipherOutputStream(outputStream, cipher)) {
+            byte[] buffer = new byte[65536]; // 64KB buffer
+            int read;
+            while ((read = inputStream.read(buffer)) != -1) {
+                cos.write(buffer, 0, read);
             }
+            cos.flush();
         }
     }
 
     @Override
     public void decryptToStream(Path sourcePath, OutputStream outputStream) throws Exception {
         try (InputStream is = Files.newInputStream(sourcePath, StandardOpenOption.READ)) {
-            byte[] iv = new byte[GCM_IV_LENGTH];
-            int readBytes = is.read(iv);
-            if (readBytes != GCM_IV_LENGTH) {
-                throw new IllegalStateException("Corrupted encrypted file (missing IV)");
-            }
+            decryptToStream(is, outputStream);
+        }
+    }
 
-            Cipher cipher = Cipher.getInstance(TRANSFORMATION);
-            GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
-            cipher.init(Cipher.DECRYPT_MODE, getSecretKey(), parameterSpec);
+    @Override
+    public void decryptToStream(InputStream encryptedInputStream, OutputStream outputStream) throws Exception {
+        byte[] iv = new byte[GCM_IV_LENGTH];
+        int readBytes = encryptedInputStream.read(iv);
+        if (readBytes != GCM_IV_LENGTH) {
+            throw new IllegalStateException("Corrupted encrypted stream (missing IV)");
+        }
 
-            try (CipherInputStream cis = new CipherInputStream(is, cipher)) {
-                byte[] buffer = new byte[8192];
-                int read;
-                while ((read = cis.read(buffer)) != -1) {
-                    outputStream.write(buffer, 0, read);
-                }
+        Cipher cipher = Cipher.getInstance(TRANSFORMATION);
+        GCMParameterSpec parameterSpec = new GCMParameterSpec(GCM_TAG_LENGTH, iv);
+        cipher.init(Cipher.DECRYPT_MODE, getSecretKey(), parameterSpec);
+
+        try (CipherInputStream cis = new CipherInputStream(encryptedInputStream, cipher)) {
+            byte[] buffer = new byte[65536]; // 64KB buffer
+            int read;
+            while ((read = cis.read(buffer)) != -1) {
+                outputStream.write(buffer, 0, read);
             }
+            outputStream.flush();
         }
     }
 

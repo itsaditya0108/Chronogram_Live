@@ -12,9 +12,17 @@ import java.util.List;
 
 public interface UploadSessionRepository extends JpaRepository<UploadSession, Long> {
 
-    Optional<UploadSession> findByUploadId(String uploadId);
+    java.util.Optional<UploadSession> findFirstByUploadIdOrderByCreatedAtDesc(String uploadId);
+
+    Optional<UploadSession> findFirstByUserIdAndCheckSumAndStatusInOrderByCreatedAtDesc(Long userId, String checkSum, List<UploadStatus> statuses);
 
     long countByUserIdAndStatusIn(Long userId, List<UploadStatus> statuses);
+
+    @Query("SELECT COUNT(u) FROM UploadSession u WHERE u.userId = :userId AND u.status IN :statuses AND u.createdAt >= :since")
+    long countActiveSessions(
+            @Param("userId") Long userId,
+            @Param("statuses") List<UploadStatus> statuses,
+            @Param("since") LocalDateTime since);
 
     List<UploadSession> findByStatusAndExpiresAtBefore(UploadStatus status, LocalDateTime cutoff);
 

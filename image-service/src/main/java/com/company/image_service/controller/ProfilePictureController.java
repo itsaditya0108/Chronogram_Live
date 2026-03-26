@@ -4,6 +4,8 @@ import com.company.image_service.entity.ProfilePicture; // Entity for Profile Pi
 import com.company.image_service.service.ProfilePictureService; // Service for profile picture operations
 import jakarta.servlet.http.HttpServletRequest; // HTTP Request object
 import org.springframework.core.io.Resource; // Resource interface for file downloads
+import org.springframework.http.MediaType;
+import org.springframework.http.MediaTypeFactory;
 import org.springframework.http.ResponseEntity; // HTTP Response Entity
 import org.springframework.web.bind.annotation.*; // Spring Web annotations
 import org.springframework.web.multipart.MultipartFile; // Multipart file support
@@ -56,7 +58,10 @@ public class ProfilePictureController {
             HttpServletRequest request) {
         Long userId = (Long) request.getAttribute("userId"); // Get authenticated user ID
         // Return the file resource
-        return ResponseEntity.ok(service.getProfilePictureResource(userId, profilePictureId, type));
+        Resource res = service.getProfilePictureResource(userId, profilePictureId, type);
+        return ResponseEntity.ok()
+                .contentType(MediaTypeFactory.getMediaType(res).orElse(MediaType.IMAGE_JPEG))
+                .body(res);
     }
 
     /**
@@ -67,7 +72,10 @@ public class ProfilePictureController {
     @GetMapping("/small")
     public ResponseEntity<Resource> small(HttpServletRequest request) {
         Long userId = (Long) request.getAttribute("userId");
-        return ResponseEntity.ok(service.getSmall(userId));
+        Resource res = service.getSmall(userId);
+        return ResponseEntity.ok()
+                .contentType(MediaTypeFactory.getMediaType(res).orElse(MediaType.IMAGE_JPEG))
+                .body(res);
     }
 
     /**
@@ -77,7 +85,10 @@ public class ProfilePictureController {
     @GetMapping("/medium")
     public ResponseEntity<Resource> medium(HttpServletRequest request) {
         Long userId = (Long) request.getAttribute("userId");
-        return ResponseEntity.ok(service.getMedium(userId));
+        Resource res = service.getMedium(userId);
+        return ResponseEntity.ok()
+                .contentType(MediaTypeFactory.getMediaType(res).orElse(MediaType.IMAGE_JPEG))
+                .body(res);
     }
 
     /**
@@ -87,7 +98,10 @@ public class ProfilePictureController {
      */
     @GetMapping("/{userId}/small")
     public ResponseEntity<Resource> getSmall(@PathVariable Long userId) {
-        return ResponseEntity.ok(service.getSmall(userId));
+        Resource res = service.getSmall(userId);
+        return ResponseEntity.ok()
+                .contentType(MediaTypeFactory.getMediaType(res).orElse(MediaType.IMAGE_JPEG))
+                .body(res);
     }
 
     /**
@@ -96,7 +110,23 @@ public class ProfilePictureController {
      */
     @GetMapping("/{userId}/medium")
     public ResponseEntity<Resource> getMedium(@PathVariable Long userId) {
-        return ResponseEntity.ok(service.getMedium(userId));
+        Resource res = service.getMedium(userId);
+        return ResponseEntity.ok()
+                .contentType(MediaTypeFactory.getMediaType(res).orElse(MediaType.IMAGE_JPEG))
+                .body(res);
+    }
+
+    /**
+     * Endpoint to set a specific profile picture from history as active.
+     * URL: PUT /api/profile-picture/{profilePictureId}/active
+     */
+    @PutMapping("/{profilePictureId}/active")
+    public ResponseEntity<Void> setActive(
+            @PathVariable Long profilePictureId,
+            HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        service.setProfilePicture(userId, profilePictureId); // Perform activation logic
+        return ResponseEntity.ok().build(); // Return 200 OK
     }
 
     /**

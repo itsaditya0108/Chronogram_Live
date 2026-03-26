@@ -43,8 +43,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         String uri = request.getRequestURI();
 
         // DEV-ONLY: Allow image download without JWT (Fallback)
-        if (uri.startsWith("/api/images/")
-                && uri.endsWith("/download")) {
+        if (((uri.startsWith("/api/images/") && uri.endsWith("/download")) ||
+             uri.startsWith("/api/profile-picture/"))) {
             // Only skip if no token provided at all
             if (authHeader == null) {
                 filterChain.doFilter(request, response);

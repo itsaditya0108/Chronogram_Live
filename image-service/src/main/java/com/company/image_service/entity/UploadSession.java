@@ -14,6 +14,9 @@ public class UploadSession {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Version
+    private Long version = 0L;
+
     @Column(name = "upload_id", nullable = false, unique = true, length = 100)
     private String uploadId;
 
@@ -48,6 +51,9 @@ public class UploadSession {
     // Optional link to SyncSession if part of an auto sync
     @Column(name = "sync_session_id")
     private Long syncSessionId;
+
+    @Column(name = "checksum", length = 255)
+    private String checkSum;
 
     public enum UploadStatus {
         INITIATED, UPLOADING, MERGING, COMPLETED, FAILED, EXPIRED
@@ -153,5 +159,13 @@ public class UploadSession {
 
     public void setSyncSessionId(Long syncSessionId) {
         this.syncSessionId = syncSessionId;
+    }
+
+    public String getCheckSum() {
+        return checkSum;
+    }
+
+    public void setCheckSum(String checkSum) {
+        this.checkSum = checkSum;
     }
 }

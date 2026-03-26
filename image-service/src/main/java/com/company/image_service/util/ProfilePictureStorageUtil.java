@@ -54,13 +54,16 @@ public class ProfilePictureStorageUtil {
         );
 
         Path originalPath = originalDir.resolve(uuid + ext);
-        ImageIO.write(square, ext.substring(1), originalPath.toFile());
+        String format = (ext != null && ext.length() > 1) ? ext.substring(1) : "jpg";
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(originalPath.toFile())) {
+            ImageCompressionUtil.writeCompressedImage(square, format, 0.75f, fos);
+        }
 
         Path smallPath = smallDir.resolve(uuid + ext);
         Path mediumPath = mediumDir.resolve(uuid + ext);
 
-        writeResized(square, SMALL, smallPath, ext);
-        writeResized(square, MEDIUM, mediumPath, ext);
+        writeResized(square, SMALL, smallPath, ext, 0.15f);
+        writeResized(square, MEDIUM, mediumPath, ext, 0.3f);
 
         return new StoredProfilePicture(
                 rel(basePath, originalPath),
@@ -75,7 +78,8 @@ public class ProfilePictureStorageUtil {
             BufferedImage src,
             int size,
             Path dest,
-            String ext
+            String ext,
+            float quality
     ) throws IOException {
 
         BufferedImage img = new BufferedImage(size, size, BufferedImage.TYPE_INT_RGB);
@@ -83,15 +87,20 @@ public class ProfilePictureStorageUtil {
         g.drawImage(src, 0, 0, size, size, null);
         g.dispose();
 
-        ImageIO.write(img, ext.substring(1), dest.toFile());
+        String format = (ext != null && ext.length() > 1) ? ext.substring(1) : "jpg";
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(dest.toFile())) {
+            ImageCompressionUtil.writeCompressedImage(img, format, quality, fos);
+        }
+    }
+
+    private static String getExtension(String filename) {
+        if (filename == null) return "";
+        int dot = filename.lastIndexOf('.');
+        return dot == -1 ? "" : filename.substring(dot).toLowerCase();
     }
 
     private static String rel(String base, Path full) {
         return Paths.get(base).relativize(full).toString().replace("\\", "/");
-    }
-
-    private static String getExtension(String name) {
-        return name.substring(name.lastIndexOf('.')).toLowerCase();
     }
 
     public record StoredProfilePicture(

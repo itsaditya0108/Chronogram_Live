@@ -21,7 +21,7 @@ public class ImageCleanupScheduler {
 //        cleanupService.cleanupDeletedImages();
 //    }
 
-    @Scheduled(cron = "0 0 17 * * ?", zone = "Asia/Kolkata")
+    // @Scheduled(cron = "0 0 17 * * ?", zone = "Asia/Kolkata")
     public void runCleanup() {
         System.out.println("Cleanup job running at " + LocalDateTime.now());
         cleanupService.cleanupDeletedImages();

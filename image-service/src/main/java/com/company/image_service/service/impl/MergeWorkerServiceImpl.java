@@ -1,9 +1,9 @@
 package com.company.image_service.service.impl;
 
-import com.company.image_service.entity.Image;
-import com.company.image_service.entity.UploadSession;
-import com.company.image_service.repository.ImageRepository;
-import com.company.image_service.repository.UploadSessionRepository;
+import com.company.image_service.entity.*;
+import com.company.image_service.repository.*;
+import java.util.Map;
+import java.util.stream.Collectors;
 import com.company.image_service.service.EncryptionService;
 import com.company.image_service.service.MergeWorkerService;
 import com.company.image_service.service.SyncManagerService;
@@ -11,44 +11,57 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.util.Optional;
-import java.util.UUID;
+import java.util.Set;
+import java.util.ArrayList;
 
 @Service
 public class MergeWorkerServiceImpl implements MergeWorkerService {
+
+    private static final Logger logger = LoggerFactory.getLogger(MergeWorkerServiceImpl.class);
 
     private final UploadSessionRepository uploadRepository;
     private final ImageRepository imageRepository;
     private final EncryptionService encryptionService;
     private final SyncManagerService syncManagerService;
+    private final ApprovedFormatRepository approvedFormatRepository;
 
-    @Value("${file.upload-dir:storage/users}")
-    private String vaultDirPath;
+    // Using VariantConfig for allowed extensions
+
+    @Value("${image.storage.base-path:./data/image-service}")
+    private String storageBasePath;
 
     @Autowired
     public MergeWorkerServiceImpl(UploadSessionRepository uploadRepository,
             ImageRepository imageRepository,
             EncryptionService encryptionService,
-            SyncManagerService syncManagerService) {
+            SyncManagerService syncManagerService,
+            ApprovedFormatRepository approvedFormatRepository) {
         this.uploadRepository = uploadRepository;
         this.imageRepository = imageRepository;
         this.encryptionService = encryptionService;
         this.syncManagerService = syncManagerService;
+        this.approvedFormatRepository = approvedFormatRepository;
+    }
+
+    private java.util.List<String> getApprovedExtensions() {
+        return approvedFormatRepository.findAllByIsActiveTrue().stream()
+                .map(f -> f.getExtension().toLowerCase())
+                .collect(java.util.stream.Collectors.toList());
     }
 
     @Override
     @Async("mergeWorkerPool")
     public void processUploadSessionAsync(String uploadId) {
-        UploadSession session = uploadRepository.findByUploadId(uploadId)
+        UploadSession session = uploadRepository.findFirstByUploadIdOrderByCreatedAtDesc(uploadId)
                 .orElseThrow(() -> new IllegalArgumentException("Upload not found"));
 
         if (session.getStatus() != UploadSession.UploadStatus.MERGING) {
@@ -64,7 +77,7 @@ public class MergeWorkerServiceImpl implements MergeWorkerService {
             String contentHash = computeHash(mergedTempFile);
 
             // 3. Deduplication Check
-            Optional<Image> existingImage = imageRepository.findByUserIdAndContentHashAndIsDeletedFalse(
+            java.util.Optional<Image> existingImage = imageRepository.findFirstByUserIdAndContentHashAndIsDeletedFalseOrderByCreatedTimestampDesc(
                     session.getUserId(), contentHash);
 
             if (existingImage.isPresent()) {
@@ -76,33 +89,48 @@ public class MergeWorkerServiceImpl implements MergeWorkerService {
                 return;
             }
 
-            // 4. Encrypt to Vault Storage
-            String storedFilename = UUID.randomUUID() + ".enc";
-            Path userDir = Paths.get(vaultDirPath, String.valueOf(session.getUserId()));
-            if (!Files.exists(userDir))
-                Files.createDirectories(userDir);
-
-            Path encryptedPath = userDir.resolve(storedFilename);
-
+            // 4. Decode image for thumbnailing and validation
+            java.awt.image.BufferedImage source;
             try (InputStream is = new FileInputStream(mergedTempFile)) {
-                encryptionService.encryptAndSave(is, encryptedPath);
+                source = javax.imageio.ImageIO.read(is);
             }
 
-            // 5. Save Metadata
+            if (source == null) {
+                throw new RuntimeException("Merged file is not a valid image");
+            }
+
+            // 5. Encrypt and Save Original + Thumbnail using centralized utility
+            com.company.image_service.dto.StoredImageResult result;
+            try (InputStream is = new FileInputStream(mergedTempFile)) {
+                result = com.company.image_service.util.FileStorageUtil.storeWithThumbnail(
+                        is,
+                        session.getOriginalFilename(),
+                        session.getUserId(),
+                        storageBasePath,
+                        source,
+                        "personal", // Default to personal for sync uploads
+                        encryptionService);
+            }
+
+            // 6. Save Metadata
             Image image = new Image();
             image.setUserId(session.getUserId());
             image.setOriginalFilename(session.getOriginalFilename());
-            image.setStoredFilename(storedFilename);
-            image.setStoragePath(encryptedPath.toString());
-            // Need a thumbnail strategy, maybe placeholder .enc for now
-            image.setThumbnailPath(encryptedPath.toString() + ".thumb");
-            image.setContentType("application/octet-stream"); // Will be decrypted on fly
+            image.setStoredFilename(result.getStoredFilename());
+            image.setStoragePath(result.getOriginalPath());
+            image.setThumbnailPath(result.getThumbnailPath());
+            image.setWidth(result.getWidth());
+            image.setHeight(result.getHeight());
+            image.setContentType("image/jpeg"); // Standard for synced photos
             image.setFileSize(mergedTempFile.length());
             image.setContentHash(contentHash);
 
+            // Scan for variants in the same storage location
+            scanAndRegisterVariants(image, result.getOriginalPath());
+
             imageRepository.save(image);
 
-            // 6. Complete Session
+            // 7. Complete Session
             session.setStatus(UploadSession.UploadStatus.COMPLETED);
             uploadRepository.save(session);
             syncManagerService.incrementSyncUploadedCount(session.getSyncSessionId());
@@ -110,9 +138,10 @@ public class MergeWorkerServiceImpl implements MergeWorkerService {
         } catch (Exception e) {
             session.setStatus(UploadSession.UploadStatus.FAILED);
             uploadRepository.save(session);
-            // Log error here without sensitive details
+            logger.error("Failed to process upload session {}: {}", uploadId, e.getMessage(), e);
         } finally {
-            // 7. Always Clean Up Unencrypted Temp File
+            // 8. Always Clean Up Unencrypted Temp File
+
             if (mergedTempFile != null && mergedTempFile.exists()) {
                 mergedTempFile.delete();
             }
@@ -162,6 +191,34 @@ public class MergeWorkerServiceImpl implements MergeWorkerService {
             File chunkRaw = new File(session.getTempFilePath() + "_chunk_" + i);
             if (chunkRaw.exists())
                 chunkRaw.delete();
+        }
+    }
+
+    private void scanAndRegisterVariants(Image image, String originalRelativePath) {
+        try {
+            java.nio.file.Path originalPath = java.nio.file.Paths.get(storageBasePath, originalRelativePath);
+            java.nio.file.Path parentDir = originalPath.getParent();
+            String baseName = originalPath.getFileName().toString();
+            int dotIndex = baseName.lastIndexOf('.');
+            if (dotIndex == -1)
+                return;
+            String nameWithoutExt = baseName.substring(0, dotIndex);
+
+            java.util.List<String> getApprovedExtensions = getApprovedExtensions();
+            java.nio.file.Files.list(parentDir).forEach(path -> {
+                String fileName = path.getFileName().toString();
+                if (fileName.startsWith(nameWithoutExt) && !fileName.equals(baseName)) {
+                    String ext = "";
+                    int lastDot = fileName.lastIndexOf('.');
+                    if (lastDot != -1) {
+                        ext = fileName.substring(lastDot).toLowerCase();
+                    }
+
+                            // Scanning variant registration is disabled as per user request (no per-file variants in DB)
+                }
+            });
+        } catch (Exception e) {
+            logger.warn("Error while scanning variants for image {}: {}", image.getId(), e.getMessage());
         }
     }
 }

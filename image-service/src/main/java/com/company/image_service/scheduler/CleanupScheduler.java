@@ -2,14 +2,13 @@ package com.company.image_service.scheduler;
 
 import com.company.image_service.entity.UploadSession;
 import com.company.image_service.repository.UploadSessionRepository;
+import com.company.image_service.service.ImageCleanupService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
-import java.io.File;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -18,15 +17,16 @@ public class CleanupScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(CleanupScheduler.class);
     private final UploadSessionRepository uploadRepository;
+    private final ImageCleanupService cleanupService;
 
     @Autowired
-    public CleanupScheduler(UploadSessionRepository uploadRepository) {
+    public CleanupScheduler(UploadSessionRepository uploadRepository, ImageCleanupService cleanupService) {
         this.uploadRepository = uploadRepository;
+        this.cleanupService = cleanupService;
     }
 
     // Run every hour
-    @Scheduled(fixedRate = 3600000)
-    @Transactional
+    // @Scheduled(fixedRate = 3600000)
     public void cleanupExpiredUploadSessions() {
         LocalDateTime now = LocalDateTime.now();
 
@@ -37,27 +37,18 @@ public class CleanupScheduler {
         expiredSessions.addAll(uploadRepository.findByStatusAndExpiresAtBefore(
                 UploadSession.UploadStatus.UPLOADING, now));
 
+        int cleanedCount = 0;
         for (UploadSession session : expiredSessions) {
-            session.setStatus(UploadSession.UploadStatus.EXPIRED);
-            uploadRepository.save(session);
-
-            // Delete temp chunks from disk
-            if (session.getTempFilePath() != null) {
-                cleanupChunks(session);
+            try {
+                cleanupService.processIndividualSessionCleanup(session);
+                cleanedCount++;
+            } catch (Exception e) {
+                log.error("Failed to cleanup expired session {}: {}", session.getUploadId(), e.getMessage());
             }
         }
 
-        if (!expiredSessions.isEmpty()) {
-            log.info("Cleaned up {} expired upload sessions.", expiredSessions.size());
-        }
-    }
-
-    private void cleanupChunks(UploadSession session) {
-        for (int i = 0; i < session.getTotalChunks(); i++) {
-            File chunkRaw = new File(session.getTempFilePath() + "_chunk_" + i);
-            if (chunkRaw.exists()) {
-                chunkRaw.delete();
-            }
+        if (cleanedCount > 0) {
+            log.info("Cleaned up {} expired upload sessions.", cleanedCount);
         }
     }
 }

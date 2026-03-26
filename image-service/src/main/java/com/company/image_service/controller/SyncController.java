@@ -9,7 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
+import com.company.image_service.exception.UnauthorizedException;
 import jakarta.servlet.http.HttpServletRequest;
 
 import java.util.HashMap;
@@ -38,19 +38,13 @@ public class SyncController {
     @PostMapping("/init")
     public ResponseEntity<?> initSync(HttpServletRequest request,
             @RequestParam SyncSession.TriggerType triggerType) {
-        try {
-            Long userId = (Long) request.getAttribute("userId");
-            if (userId == null) {
-                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Unauthorized"));
-            }
-
-            SyncSession session = syncManager.startSyncSession(userId, triggerType);
-            return ResponseEntity.ok(session);
-        } catch (IllegalStateException e) {
-            Map<String, String> err = new HashMap<>();
-            err.put("error", e.getMessage());
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(err);
+        Long userId = (Long) request.getAttribute("userId");
+        if (userId == null) {
+            throw new UnauthorizedException("User not authenticated");
         }
+
+        SyncSession session = syncManager.startSyncSession(userId, triggerType);
+        return ResponseEntity.ok(session);
     }
 
     /**
@@ -58,9 +52,9 @@ public class SyncController {
      */
     @PostMapping("/{sessionId}/complete")
     public ResponseEntity<?> completeSync(@PathVariable Long sessionId,
-            @RequestParam int detected,
-            @RequestParam int skipped) {
-        syncManager.completeSyncSession(sessionId, detected, skipped);
+            @RequestParam("filesDetected") int filesDetected,
+            @RequestParam("filesSkipped") int filesSkipped) {
+        syncManager.completeSyncSession(sessionId, filesDetected, filesSkipped);
         return ResponseEntity.ok().build();
     }
 
@@ -69,25 +63,25 @@ public class SyncController {
      */
     @PostMapping("/upload/init")
     public ResponseEntity<?> initUpload(HttpServletRequest request,
-            @RequestParam String originalFilename,
-            @RequestParam int totalChunks,
-            @RequestParam long totalFileSize,
-            @RequestParam(required = false) Long syncSessionId) {
+            @RequestBody com.company.image_service.dto.UploadInitRequest uploadRequest) {
 
         Long userId = (Long) request.getAttribute("userId");
         if (userId == null) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Unauthorized"));
+            throw new UnauthorizedException("User not authenticated");
         }
 
-        if (!syncManager.canStartUpload(userId, totalFileSize)) {
-            Map<String, String> err = new HashMap<>();
-            err.put("error", "Upload quota or active upload limit exceeded.");
-            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(err);
+        if (!syncManager.canStartUpload(userId, uploadRequest.getTotalFileSize())) {
+            throw new IllegalStateException("Upload quota or active upload limit exceeded");
         }
 
-        UploadSession session = chunkUploadService.initiateUpload(userId, originalFilename, totalChunks, totalFileSize,
-                syncSessionId);
-        return ResponseEntity.ok(session);
+        com.company.image_service.dto.ImageUploadInitResponse response = chunkUploadService.initiateUpload(
+                userId,
+                uploadRequest.getOriginalFilename(),
+                uploadRequest.getTotalChunks(),
+                uploadRequest.getTotalFileSize(),
+                uploadRequest.getSyncSessionId(),
+                uploadRequest.getContentHash());
+        return ResponseEntity.ok(response);
     }
 
     /**
@@ -96,25 +90,20 @@ public class SyncController {
      */
     @PostMapping("/upload/{uploadId}/chunk")
     public ResponseEntity<?> uploadChunk(@PathVariable String uploadId,
-            @RequestParam("chunk") MultipartFile chunk,
-            @RequestParam int chunkIndex) {
-        try {
-            boolean isComplete = chunkUploadService.receiveChunk(uploadId, chunk, chunkIndex);
+            @RequestHeader(value = "X-Chunk-Index", required = false) Integer headerIndex,
+            @RequestParam(value = "chunkIndex", required = false) Integer paramIndex,
+            @RequestBody byte[] chunkData) {
+        int chunkIndex = (headerIndex != null) ? headerIndex : (paramIndex != null ? paramIndex : 0);
 
-            if (isComplete) {
-                // Submit to the thread pool for merging and encrypting
-                mergeWorkerService.processUploadSessionAsync(uploadId);
-                return ResponseEntity
-                        .ok(Map.of("message", "All chunks received. Merging and encrypting in background."));
-            }
+        boolean isComplete = chunkUploadService.receiveChunkBytes(uploadId, chunkData, chunkIndex);
 
-            return ResponseEntity.ok(Map.of("message", "Chunk " + chunkIndex + " received successfully"));
-
-        } catch (Exception e) {
-            Map<String, String> err = new HashMap<>();
-            err.put("error", e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(err);
+        if (isComplete) {
+            mergeWorkerService.processUploadSessionAsync(uploadId);
+            return ResponseEntity
+                    .ok(Map.of("message", "All chunks received. Merging and encrypting in background."));
         }
+
+        return ResponseEntity.ok(Map.of("message", "Chunk " + chunkIndex + " received successfully"));
     }
 
     /**

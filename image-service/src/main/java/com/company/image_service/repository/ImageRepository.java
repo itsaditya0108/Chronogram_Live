@@ -13,51 +13,17 @@ import java.util.Optional;
 
 public interface ImageRepository extends JpaRepository<Image, Long> {
 
-    /**
-     * Fetch images owned by a user (not deleted)
-     */
-    Page<Image> findByUserIdAndIsDeletedFalse(
-            Long userId,
-            Pageable pageable);
+    Page<Image> findByUserIdAndIsDeletedFalse(Long userId, Pageable pageable);
 
-    /**
-     * Fetch a single image by id, ensuring ownership
-     */
-    Optional<Image> findByIdAndUserIdAndIsDeletedFalse(
-            Long id,
-            Long userId);
+    Optional<Image> findByIdAndUserIdAndIsDeletedFalse(Long id, Long userId);
 
-    /**
-     * Check for duplicate filename for a user
-     */
-    Optional<Image> findByUserIdAndOriginalFilenameAndIsDeletedFalse(
-            Long userId,
-            String originalFilename);
+    Optional<Image> findByUserIdAndOriginalFilenameAndIsDeletedFalse(Long userId, String originalFilename);
 
-    /**
-     * Check for duplicate content hash for a user (Deduplication)
-     */
-    Optional<Image> findByUserIdAndContentHashAndIsDeletedFalse(
-            Long userId,
-            String contentHash);
+    Optional<Image> findFirstByUserIdAndContentHashAndIsDeletedFalseOrderByCreatedTimestampDesc(Long userId, String contentHash);
 
-    /**
-     * Delete image by id, ensuring ownership
-     */
-    /**
-     * Delete image by id, ensuring ownership
-     */
-    List<Image> findByIsDeletedTrueAndDeletedTimestampBefore(
-            LocalDateTime cutoff,
-            Pageable pageable);
+    List<Image> findByIsDeletedTrueAndDeletedTimestampBefore(LocalDateTime cutoff, Pageable pageable);
 
-    /**
-     * Filter by storage path prefix (e.g. "users/" vs "shared_images/")
-     */
-    Page<Image> findByUserIdAndIsDeletedFalseAndStoragePathStartingWith(
-            Long userId,
-            String pathPrefix,
-            Pageable pageable);
+    Page<Image> findByUserIdAndIsDeletedFalseAndStoragePathStartingWith(Long userId, String pathPrefix, Pageable pageable);
 
     @Query("""
                 SELECT COUNT(i), COALESCE(SUM(i.fileSize), 0)
@@ -74,4 +40,15 @@ public interface ImageRepository extends JpaRepository<Image, Long> {
             """)
     Object getUserStorage(@Param("userId") Long userId);
 
+    @Query(value = """
+                SELECT 
+                    (SELECT COUNT(*) FROM images WHERE user_id = :userId AND is_deleted = 0) as totalFiles,
+                    (SELECT COALESCE(SUM(file_size), 0) FROM images WHERE user_id = :userId AND is_deleted = 0) as photoBytes
+            """, nativeQuery = true)
+    List<Object[]> getDetailedUserStorage(@Param("userId") Long userId);
+
+    @Query(value = """
+                SELECT COALESCE(SUM(file_size), 0) FROM images WHERE user_id = :userId AND is_deleted = 0
+            """, nativeQuery = true)
+    Long getTotalGlobalStorageByUser(@Param("userId") Long userId);
 }

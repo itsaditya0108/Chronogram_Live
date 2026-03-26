@@ -42,6 +42,8 @@ public class Image {
     @Column(name = "height")
     private Integer height;
 
+    // Per-file variants tracking removed as per user request (no DB table)
+
     // 🔥 NEW: THUMBNAIL PATH
     @Column(name = "thumbnail_path", nullable = false)
     private String thumbnailPath;
@@ -187,4 +189,6 @@ public class Image {
     public void setContentHash(String contentHash) {
         this.contentHash = contentHash;
     }
+
+    // variants methods removed
 }
