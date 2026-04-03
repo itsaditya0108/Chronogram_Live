@@ -37,7 +37,6 @@ public class GlobalExceptionHandler {
                 "Unauthorized",
                 ex.getMaskedEmail(),
                 ex.getTemporaryToken(),
-                ex.getTestOtp(),
                 getTraceId());
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
     }
@@ -95,6 +94,37 @@ public class GlobalExceptionHandler {
                 request.getDescription(false),
                 getTraceId());
         return new ResponseEntity<>(errorDetails, ex.getStatus());
+    }
+
+    /**
+     * Handles malformed JSON payloads.
+     */
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleHttpMessageNotReadable(org.springframework.http.converter.HttpMessageNotReadableException ex) {
+        ErrorResponse error = new ErrorResponse(
+                HttpStatus.BAD_REQUEST.value(),
+                "Malformed JSON request",
+                "Bad Request",
+                getTraceId());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+
+    /**
+     * Handles validation errors from @Valid annotated request bodies.
+     */
+    @ExceptionHandler(org.springframework.web.bind.MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidationExceptions(org.springframework.web.bind.MethodArgumentNotValidException ex, WebRequest request) {
+        StringBuilder errors = new StringBuilder();
+        ex.getBindingResult().getFieldErrors().forEach(error -> {
+            errors.append(error.getField()).append(": ").append(error.getDefaultMessage()).append("; ");
+        });
+
+        ErrorResponse errorDetails = new ErrorResponse(
+                HttpStatus.BAD_REQUEST.value(),
+                errors.toString(),
+                "Validation Error",
+                getTraceId());
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorDetails);
     }
 
     /**

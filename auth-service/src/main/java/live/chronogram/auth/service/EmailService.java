@@ -46,7 +46,13 @@ public class EmailService {
             logger.info("OTP email sent successfully to: {}", toEmail);
 
         } catch (Exception e) {
-            logger.error("Failed to send OTP email to {}: {}", toEmail, e.getMessage());
+            // Enhanced logging for VPS SMTP diagnostics
+            logger.error("!!! SMTP FAILURE !!! Target: {}, Error: {}, Cause: {}", 
+                    toEmail, e.getMessage(), (e.getCause() != null ? e.getCause().getMessage() : "N/A"));
+            
+            // Detailed stack trace for deep debugging on VPS
+            logger.error("Full SMTP Stack Trace:", e);
+
             throw new AuthException(HttpStatus.INTERNAL_SERVER_ERROR, "FAILED_TO_SEND_EMAIL_OTP");
         }
     }

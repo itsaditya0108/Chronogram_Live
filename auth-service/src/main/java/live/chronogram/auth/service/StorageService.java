@@ -32,9 +32,11 @@ public class StorageService {
     private static final Double STORAGE_LIMIT_GB = 10.0;
     private static final Double STORAGE_WARNING_THRESHOLD_GB = 9.0;
 
-    // Service URLs (should be in properties in real scenario)
-    private static final String IMAGE_SERVICE_URL = "http://localhost:8084";
-    private static final String VIDEO_SERVICE_URL = "http://localhost:8085";
+    @org.springframework.beans.factory.annotation.Value("${image.service.url}")
+    private String imageServiceUrl;
+
+    @org.springframework.beans.factory.annotation.Value("${video.service.url}")
+    private String videoServiceUrl;
 
     /**
      * Aggregates storage info by conditionally checking cache or calling external
@@ -91,7 +93,7 @@ public class StorageService {
         try {
             // Fetch from Image Service
             live.chronogram.auth.dto.ExtUserStorageResponse imageStorage = restTemplate.getForObject(
-                    IMAGE_SERVICE_URL + "/internal/storage/user/" + userId,
+                    imageServiceUrl + "/internal/storage/user/" + userId,
                     live.chronogram.auth.dto.ExtUserStorageResponse.class);
 
             if (imageStorage != null) {
@@ -105,7 +107,7 @@ public class StorageService {
         try {
             // Fetch from Video Service
             live.chronogram.auth.dto.ExtUserStorageResponse videoStorage = restTemplate.getForObject(
-                    VIDEO_SERVICE_URL + "/internal/storage/user/" + userId,
+                    videoServiceUrl + "/internal/storage/user/" + userId,
                     live.chronogram.auth.dto.ExtUserStorageResponse.class);
 
             if (videoStorage != null) {

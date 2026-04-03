@@ -21,7 +21,8 @@ public class AppInfoController {
     private static final String VERSION = "1.0.3";
     private static final int BUILD = 25;
     private static final String MIN_SUPPORTED = "1.0.0";
-    private static final String PRIVACY_URL = "https://chronogram.live/privacy";
+    @org.springframework.beans.factory.annotation.Value("${app.privacy-url:https://www.chronogram.live/privacy}")
+    private String privacyUrl;
 
     /**
      * API Endpoint: GET /api/app/info
@@ -42,6 +43,6 @@ public class AppInfoController {
      */
     @GetMapping("/privacy")
     public ResponseEntity<?> getPrivacyPolicy() {
-        return ResponseEntity.ok(Map.of("url", PRIVACY_URL));
+        return ResponseEntity.ok(Map.of("url", privacyUrl));
     }
 }

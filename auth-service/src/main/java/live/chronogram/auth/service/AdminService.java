@@ -53,8 +53,11 @@ public class AdminService {
     @Autowired
     private RestTemplate restTemplate;
 
-    private static final String IMAGE_SERVICE_URL = "http://localhost:8084";
-    private static final String VIDEO_SERVICE_URL = "http://localhost:8085";
+    @org.springframework.beans.factory.annotation.Value("${image.service.url}")
+    private String imageServiceUrl;
+
+    @org.springframework.beans.factory.annotation.Value("${video.service.url}")
+    private String videoServiceUrl;
 
     public List<User> getAllUsers() {
         return userRepository.findAll();
@@ -182,7 +185,7 @@ public class AdminService {
                 // Fetch Image Storage
                 long photoBytes = 0;
                 try {
-                    String imgUrl = IMAGE_SERVICE_URL + "/internal/storage/user/" + user.getUserId();
+                    String imgUrl = imageServiceUrl + "/internal/storage/user/" + user.getUserId();
                     Map<String, Object> imgRes = restTemplate.getForObject(imgUrl, Map.class);
                     if (imgRes != null) photoBytes = ((Number) imgRes.get("photoBytes")).longValue();
                 } catch (Exception e) { logger.warn("Image sync failed for user {}: {}", user.getUserId(), e.getMessage()); }
@@ -190,7 +193,7 @@ public class AdminService {
                 // Fetch Video Storage
                 long videoBytes = 0;
                 try {
-                    String vidUrl = VIDEO_SERVICE_URL + "/internal/storage/user/" + user.getUserId();
+                    String vidUrl = videoServiceUrl + "/internal/storage/user/" + user.getUserId();
                     Map<String, Object> vidRes = restTemplate.getForObject(vidUrl, Map.class);
                     if (vidRes != null) videoBytes = ((Number) vidRes.get("totalBytes")).longValue();
                 } catch (Exception e) { logger.warn("Video sync failed for user {}: {}", user.getUserId(), e.getMessage()); }

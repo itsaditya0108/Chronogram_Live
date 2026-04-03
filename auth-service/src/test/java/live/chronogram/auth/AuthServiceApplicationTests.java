@@ -1,4 +1,4 @@
-package live.chronogram.auth_service;
+package live.chronogram.auth;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;

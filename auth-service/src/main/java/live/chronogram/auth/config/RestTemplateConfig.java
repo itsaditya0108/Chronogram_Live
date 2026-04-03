@@ -17,6 +17,11 @@ public class RestTemplateConfig {
      */
     @Bean
     public RestTemplate restTemplate() {
-        return new RestTemplate();
+        RestTemplate restTemplate = new RestTemplate();
+        // Since we need the interceptor to read the response body without breaking the stream,
+        // we use BufferingClientHttpRequestFactory.
+        restTemplate.setRequestFactory(new org.springframework.http.client.BufferingClientHttpRequestFactory(new org.springframework.http.client.SimpleClientHttpRequestFactory()));
+        restTemplate.getInterceptors().add(new LoggingInterceptor());
+        return restTemplate;
     }
 }

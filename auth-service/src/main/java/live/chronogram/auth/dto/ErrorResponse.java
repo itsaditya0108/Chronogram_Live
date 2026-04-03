@@ -39,10 +39,6 @@ public class ErrorResponse {
      */
     private String temporaryToken;
 
-    /**
-     * Optional: test OTP returned for development/testing convenience.
-     */
-    private String testOtp;
 
     /**
      * Unique Trace ID (Correlation ID) associated with this request/error.
@@ -65,14 +61,13 @@ public class ErrorResponse {
         this.traceId = traceId;
     }
 
-    public ErrorResponse(int status, String error, String message, String maskedEmail, String temporaryToken, String testOtp, String traceId) {
+    public ErrorResponse(int status, String error, String message, String maskedEmail, String temporaryToken, String traceId) {
         this.timestamp = LocalDateTime.now();
         this.status = status;
         this.error = error;
         this.message = message;
         this.maskedEmail = maskedEmail;
         this.temporaryToken = temporaryToken;
-        this.testOtp = testOtp;
         this.traceId = traceId;
     }
 
@@ -99,10 +94,6 @@ public class ErrorResponse {
 
     public String getTemporaryToken() {
         return temporaryToken;
-    }
-
-    public String getTestOtp() {
-        return testOtp;
     }
 
     public String getTraceId() {
@@ -132,10 +123,6 @@ public class ErrorResponse {
 
     public void setTemporaryToken(String temporaryToken) {
         this.temporaryToken = temporaryToken;
-    }
-
-    public void setTestOtp(String testOtp) {
-        this.testOtp = testOtp;
     }
 
     public void setTraceId(String traceId) {

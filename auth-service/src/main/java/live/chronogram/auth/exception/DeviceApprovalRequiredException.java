@@ -18,16 +18,11 @@ public class DeviceApprovalRequiredException extends AuthException {
      */
     private final String temporaryToken;
 
-    /**
-     * Optional: test OTP returned for development/testing convenience.
-     */
-    private final String testOtp;
 
-    public DeviceApprovalRequiredException(String message, String maskedEmail, String temporaryToken, String testOtp) {
+    public DeviceApprovalRequiredException(String message, String maskedEmail, String temporaryToken) {
         super(HttpStatus.UNAUTHORIZED, message);
         this.maskedEmail = maskedEmail;
         this.temporaryToken = temporaryToken;
-        this.testOtp = testOtp;
     }
 
     public String getMaskedEmail() {
@@ -36,9 +31,4 @@ public class DeviceApprovalRequiredException extends AuthException {
 
     public String getTemporaryToken() {
         return temporaryToken;
-    }
-
-    public String getTestOtp() {
-        return testOtp;
-    }
-}
+    }}

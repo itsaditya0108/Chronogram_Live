@@ -1,52 +1,48 @@
 # 🧪 Chronogram Auth Service — API Testing Guide
 
 **Base URL:** `http://localhost:8086/api`  
-**Version:** Updated March 2026  
-**For:** Flutter Developers · QA Engineers · Load Testers
+**Version:** 2.1 (Updated March 2026)  
+**Security:** Stateless JWT + Session Binding  
 
 ---
 
 ## 📋 Table of Contents
 
-| # | Endpoint | Method |
-|---|---|---|
-| 1 | [Register: Send Mobile OTP](#1-register--send-mobile-otp) | POST |
-| 2 | [Register: Verify Mobile OTP](#2-register--verify-mobile-otp) | POST |
-| 3 | [Register: Send Email OTP](#3-register--send-email-otp) | POST |
-| 4 | [Register: Verify Email OTP](#4-register--verify-email-otp) | POST |
-| 5 | [Register: Complete Profile](#5-register--complete-profile) | POST |
-| 6 | [Login: Send OTP](#6-login--send-otp) | POST |
-| 7 | [Login: Verify OTP](#7-login--verify-otp) | POST |
-| 8 | [New Device: Verify](#8-new-device--verify) | POST |
-| 9 | [New Device: Resend OTP](#9-new-device--resend-otp) | POST |
-| 10 | [Resend: Register OTP (Mobile/Email)](#10-resend-register-otp) | POST |
-| 11 | [Resend: Login OTP](#11-resend-login-otp) | POST |
-| 12 | [Link Email: Send OTP](#12-link-email--send-otp) | POST |
-| 13 | [Link Email: Verify](#13-link-email--verify) | POST |
-| 14 | [Refresh Token](#14-refresh-token) | POST |
-| 15 | [Validate Session](#15-validate-session) | GET |
-| 16 | [Get Profile (me)](#16-get-my-profile) | GET |
-| 17 | [Logout](#17-logout) | POST |
-| 18 | [Profile: Get](#18-profile-management) | GET |
-| 19 | [Profile: Update Name](#18-profile-management) | PUT |
-| 20 | [Storage: Get Usage](#19-storage-api) | GET |
-| 21 | [Settings: Sync Pref](#20-settings-api) | GET / PUT |
-| 22 | [Account: Delete](#21-delete-account) | DELETE |
-| 23 | [Firebase Login/Register](#22-firebase-auth) | POST |
-| 24 | [Admin: User Management](#admin-panel-apis) | GET / POST |
-| 25 | [Admin: System Storage](#admin-panel-apis) | GET |
+| # | Endpoint | Method | Key Change |
+|---|---|---|---|
+| 1 | [Register: Send Mobile OTP](#1-register--send-mobile-otp) | POST | skipSms for Firebase |
+| 2 | [Register: Verify Mobile OTP](#2-register--verify-mobile-otp) | POST | SIM Serial Required |
+| 3 | [Register: Send Email OTP](#3-register--send-email-otp) | POST | 5-min Expiration |
+| 4 | [Register: Verify Email OTP](#4-register--verify-email-otp) | POST | Stateless Token |
+| 5 | [Register: Complete Profile](#5-register--complete-profile) | POST | Admin Approval State |
+| 6 | [Login: Send OTP](#6-login--send-otp) | POST | Upfront Blocked Check |
+| 7 | [Login: Verify OTP](#7-login--verify-otp) | POST | Trusted Device Check |
+| 8 | [New Device: Verify](#8-new-device--verify) | POST | 401 Approval Required |
+| 9 | [New Device: Resend OTP](#9-new-device--resend-otp) | POST | Temporary Session |
+| 10 | [Resend: Register OTP](#10-resend-register-otp) | POST | Multi-Target Support |
+| 11 | [Resend: Login OTP](#11-resend-login-otp) | POST | - |
+| 12 | [Link Email: Send OTP](#12-link-email--send-otp) | POST | Protected Auth |
+| 13 | [Refresh Token](#14-refresh-token) | POST | SHA-256 Hashing |
+| 14 | [Validate Session](#15-validate-session) | GET | Microservice Health |
+| 15 | [Get Profile (me)](#16-get-my-profile) | GET | Masked Privacy |
+| 16 | [Logout](#17-logout) | POST | Token Revocation |
+| 17 | [Storage: Get Usage](#19-storage-api) | GET | - |
+| 18 | [Settings: Sync Pref](#20-settings-api) | GET / PUT | - |
+| 19 | [Account: Delete](#21-delete-account) | DELETE | App Store Compliant |
+| 20 | [Firebase Login/Register](#22-firebase-auth) | POST | Global Identifier |
 
 ---
 
 ## 🛡️ Global Security Notes
 
 - **Auth Header:** `Authorization: Bearer <ACCESS_TOKEN>` (required for all protected endpoints)
+- **OTP Expiration:** ALL OTPs are valid for **5 minutes** precisely.
+- **OTP Lockout Policy:** 
+  - 5 wrong codes OR 5 resends → **15-minute account lockout**.
+  - Lockout reason is returned in the `message` field with status `429`.
 - **Traceability:** Every response includes `X-Correlation-ID`. Log this for debugging.
-- **Error Format:**
-  ```json
-  { "status": 400, "message": "...", "traceId": "GUID-xxx" }
-  ```
-- **OTP Lock:** 5 wrong codes OR 5 resends → **15-minute lockout**
+- **Deleted Accounts → `410 Gone`:** `"This account has been deleted."`
+- **Blocked Accounts → `403 Forbidden`:** `"Account is blocked. Reason: ..."`
 - **Deleted Accounts → `410 Gone`:** `"Account deleted."`
 - **Payload Limits:** JSON: 100KB · Photo: 5MB · Multipart: 15MB
 
@@ -54,14 +50,19 @@
 
 ## 🔗 Token Chain
 
+```mermaid
+graph TD
+    A[send-otp] -->|otpSessionToken 5m| B[verify-otp / verify-login-otp]
+    B -->|401 approval_required| C[verify-new-device]
+    B -->|200 Success - Registration| D[registrationToken 15m]
+    D --> E[send-email-otp]
+    E -->|registrationToken| F[verify-email]
+    F -->|registrationToken| G[complete-profile]
+    G -->|200 Success| H[Admin Approval Pending]
+    B -->|200 Success - Login| I[accessToken + refreshToken]
+    C -->|200 Success| I
 ```
-send-otp
-  └─ otpSessionToken (5 min) ──► verify-otp / verify-login-otp
-       └─ registrationToken (15 min) ──► send-email-otp ──► verify-email ──► complete-profile
-            └─ accessToken (1 day) + refreshToken (1 year) [FINAL LOGIN]
-                                                                   │
-new device login ──► temporaryToken ──► verify-new-device ─────────┘
-```
+
 
 ---
 
@@ -93,20 +94,21 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 ```json
 {
   "message": "OTP sent successfully.",
-  "test_otp": "123456", 
   "otpSessionToken": "eyJhbGci..."
 }
 ```
 
-> ℹ️ If `skipSms: true` was sent, `test_otp` will be returned as an empty string `""`.
+> ℹ️ Backend does NOT echo OTPs for security. Developers should check the `otp_verification` table for the code during testing.
 
 **Errors:**
 | Status | Message |
 |---|---|
 | `400` | `"Invalid mobile number format. Must be 10 digits."` |
 | `400` | `"Device ID is required"` |
-| `409` | `"User already registered. Please login."` |
-| `429` | `"Your account is temporarily locked. Please try again after 15 minute(s)."` |
+| `409` | `"You are already registered. Please login."` |
+| `429` | `"Account is temporarily locked. Try again after 15 minute(s)."` |
+| `410` | `"This account has been deleted. Please contact support."` |
+
 
 ---
 
@@ -143,16 +145,18 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 }
 ```
 
-> ⚠️ The `accessToken` returned here IS the **registrationToken** for the next steps.
+> ℹ️ The `accessToken` returned here IS the **registrationToken** (valid for 15 mins).
 
 **Errors:**
 | Status | Message |
 |---|---|
 | `400` | `"Invalid Mobile OTP"` |
 | `400` | `"OTP not found or expired. Please request a new one."` |
+| `400` | `"SIM_REQUIRED: Registration requires a valid SIM card."` |
 | `401` | `"Invalid session: The session token has expired or been replaced."` |
 | `403` | `"OTP session mismatch: This token belongs to a different mobile number."` |
 | `429` | `"Your account is temporarily locked. Please try again after 15 minute(s)."` |
+
 
 ---
 
@@ -172,12 +176,11 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 ```json
 {
   "message": "Email OTP sent successfully.",
-  "test_otp": "000000",
   "accessToken": "eyJhbGci..."
 }
 ```
 
-> ⚠️ Use the new `accessToken` for the `verify-email-registration-otp` step.
+> ⚠️ The `accessToken` returned here is the updated **registrationToken** (valid for 15 mins). The Email OTP is valid for **5 mins**.
 
 **Errors:**
 | Status | Message |
@@ -186,6 +189,8 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 | `400` | `"Invalid email format."` |
 | `400` | `"Email already in use. Please use a different email."` |
 | `401` | `"Invalid registration token."` |
+| `403` | `"Invalid registration step. Cannot send email OTP."` |
+
 
 ---
 
@@ -248,16 +253,15 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 }
 ```
 
-> 🛡️ **Security Note:** In the latest version, `complete-profile` does NOT issue security tokens. Users must remain on a "Waiting for Approval" screen. Once an admin approves the account, the user can log in via the standard OTP flow.
-
-> ℹ️ User `approvalStatus` will be `PENDING`. They cannot access full features until an admin approves.
+> 🛡️ **Security Note:** In the latest version, `complete-profile` does NOT issue security tokens. Users must remain on a "Waiting for Approval" screen.
 
 **Errors:**
 | Status | Message |
 |---|---|
 | `400` | `"Validation Error: Name must contain only alphabetic characters and spaces."` |
-| `400` | `"Age Restriction: Users must be 12 years or older to register."` |
+| `400` | `"Validation Error: Age Restriction: Users must be 12 years or older to register."` |
 | `401` | `"Invalid registration token."` |
+
 
 ---
 
@@ -281,22 +285,21 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 ```json
 {
   "message": "OTP sent successfully.",
-  "test_otp": "654321",
   "otpSessionToken": "eyJhbGci..."
 }
 ```
-
-> ℹ️ If `skipSms: true` was sent, `test_otp` will be returned as an empty string `""`.
 
 **Errors:**
 | Status | Message |
 |---|---|
 | `400` | `"Invalid mobile number format. Must be 10 digits."` |
 | `400` | `"Device ID is required"` |
-| `403` | `"Wait for admin approval your profile created"` |
+| `401` | `"Registration incomplete. Please use the registration screen."` |
+| `403` | `"Admin approval required. Please wait for sometimes..."` |
 | `404` | `"User not found. Please register."` |
-| `410` | `"Account deleted."` |
-| `429` | `"Your account is temporarily locked. Please try again after N minute(s)."` |
+| `410` | `"This account has been deleted."` |
+| `429` | `"Account is temporarily locked. Try again after 15 minute(s)."` |
+
 
 ---
 
@@ -333,24 +336,27 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 }
 ```
 
-**Response `401` (New/Untrusted Device):**
+**Response `401 Unauthorized` (New/Untrusted Device):**
 ```json
 {
   "status": 401,
-  "message": "APPROVAL_REQUIRED: OTP sent to registered email.",
+  "message": "APPROVAL_REQUIRED: Security OTP sent to email.",
   "maskedEmail": "jo***@gmail.com",
   "temporaryToken": "eyJhbGci..."
 }
 ```
 
-> ➡️ On `APPROVAL_REQUIRED`: Navigate user to **New Device Verify** screen. Pass the `temporaryToken`.
+> ➡️ On `APPROVAL_REQUIRED`: Navigate user to **New Device Verify** screen. Pass the `temporaryToken` in subsequent requests.
 
 **Errors:**
 | Status | Message |
 |---|---|
 | `400` | `"Invalid Mobile OTP"` |
-| `401` | `"Invalid session: The session token has expired."` |
-| `429` | `"Your account is temporarily locked."` |
+| `400` | `"OTP not found or expired. Please request a new one."` |
+| `401` | `"Invalid session: The session token has expired or been replaced."` |
+| `403` | `"Cross-device OTP verification attempt detected and blocked."` |
+| `429` | `"Account locked. Please try again after 15 minute(s)."` |
+
 
 ---
 
@@ -383,8 +389,10 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 | Status | Message |
 |---|---|
 | `400` | `"Invalid OTP"` |
-| `400` | `"OTP expired."` |
-| `400` | `"OTP must be exactly 6 digits."` |
+| `400` | `"OTP not found or expired. Please request a new one."` |
+| `401` | `"INVALID_OTP_SESSION: The temporary token does not match the current OTP attempt."` |
+| `410` | `"This account has been deleted."` |
+
 
 ---
 
@@ -403,17 +411,19 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 ```json
 {
   "message": "New Device OTP resent successfully to registered email.",
-  "test_otp": "445566",
   "temporaryToken": "eyJhbGci..."
 }
 ```
 
-> ⚠️ Replace the old `temporaryToken` with the new one returned here for the next resend or verify attempt.
+> ⚠️ Replace the old `temporaryToken` with the new one returned here.
 
 **Errors:**
 | Status | Message |
 |---|---|
 | `400` | `"Temporary token is required for resend."` |
+| `401` | `"Invalid temporary token for new device verification."` |
+| `429` | `"Account locked. Please try again after 15 minute(s)."` |
+
 
 ---
 
@@ -433,10 +443,10 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 ```json
 {
   "message": "Mobile OTP resent successfully.",
-  "test_otp": "112233",
   "otpSessionToken": "eyJhbGci..."
 }
 ```
+
 
 ### For Email OTP:
 ```json
@@ -450,10 +460,10 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 ```json
 {
   "message": "Email OTP resent successfully.",
-  "test_otp": "998877",
   "accessToken": "eyJhbGci..."
 }
 ```
+
 
 ---
 
@@ -473,10 +483,10 @@ new device login ──► temporaryToken ──► verify-new-device ───�
 ```json
 {
   "message": "Mobile OTP resent successfully.",
-  "test_otp": "776655",
   "otpSessionToken": "eyJhbGci..."
 }
 ```
+
 
 ---
 
@@ -499,10 +509,10 @@ For users who only registered with mobile and want to add an email.
 ```json
 {
   "message": "OTP sent to email.",
-  "test_otp": "334455",
   "registrationToken": "eyJhbGci..."
 }
 ```
+
 
 ---
 
@@ -726,15 +736,23 @@ This endpoint is used for **direct login/registration** using a Firebase ID Toke
 }
 ```
 
-**Response `403` (Unapproved User):**
+**Response `403 Forbidden` (Unapproved User):**
 ```json
 {
   "status": 403,
-  "message": "Wait for admin approval your profile created"
+  "message": "Admin approval required. Please wait for sometimes..."
 }
 ```
 
-> ⚠️ For new users, the `accessToken` returned is a **registrationToken** (Step: `EMAIL_REQUIRED`). You must call **Step 3 (Send Email OTP)** using this token to proceed with registration. Unapproved existing users will be blocked with a `403` error.
+> ⚠️ For new users, the `accessToken` returned is a **registrationToken** (Step: `EMAIL_REQUIRED`). You must call **Step 3 (Send Email OTP)** using this token.
+
+**Errors:**
+| Status | Message |
+|---|---|
+| `401` | `"Firebase Authentication Failed"` |
+| `410` | `"This account has been deleted."` |
+| `429` | `"Account is temporarily locked."` |
+
 
 ---
 
@@ -778,16 +796,18 @@ After **Step 5 (Complete Profile)**, the user's account is created in `PENDING` 
 
 ## 🔁 Recommended Flutter Implementation Checklist
 
-- [ ] Store `accessToken` + `refreshToken` in `flutter_secure_storage`
-- [ ] Add global `401` interceptor → call `refresh-token` → retry original request
-- [ ] Show "Waiting for Approval" screen if `approvalStatus == PENDING`
-- [ ] Send `deviceId` (stable UUID) on ALL OTP endpoints
-- [ ] Send `pushToken` (FCM) during `verify-otp` and `verify-login-otp`
-- [ ] Use **`skipSms: true`** on Send OTP endpoints when using Firebase to avoid double SMS
-- [ ] Log `X-Correlation-ID` from every response for debugging
-- [ ] Handle `410 Gone` globally → redirect to login with "Account deleted" message
-- [ ] Handle `429 Too Many Requests` → show lockout timer
-- [ ] On `APPROVAL_REQUIRED` from login → navigate to New Device screen with `temporaryToken`
+- [ ] Store `accessToken` + `refreshToken` in `flutter_secure_storage`.
+- [ ] Add global `401` interceptor → call `refresh-token` → retry original request once.
+- [ ] Watch for `APPROVAL_REQUIRED` (401) during login → Navigate to New Device screen.
+- [ ] Show "Waiting for Approval" screen if `403 Forbidden` is received during login (Admin Pending).
+- [ ] Send `deviceId` (stable UUID) on ALL OTP and Auth endpoints.
+- [ ] Send `simSerial` (Physical SIM ID) on `verify-otp` (Registration).
+- [ ] Send `pushToken` (FCM) during `verify-login-otp` for security alerts.
+- [ ] Use **`skipSms: true`** on Send OTP endpoints when using Firebase to avoid double SMS.
+- [ ] Set **5-minute timers** on UI for OTP expiration.
+- [ ] Handle `410 Gone` globally → Logout user with "Account deleted" alert.
+- [ ] Handle `429 Too Many Requests` → Show lockout timer based on 15-minute policy.
+
 
 ---
 

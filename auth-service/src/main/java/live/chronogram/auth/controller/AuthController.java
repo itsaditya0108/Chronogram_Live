@@ -46,12 +46,14 @@ public class AuthController {
     public ResponseEntity<?> sendRegistrationOtp(@RequestBody OtpRequest request, jakarta.servlet.http.HttpServletRequest servletRequest) {
         // 1. Syntax Validation: Ensure mobile number is 10 digits
         if (request.getMobileNumber() == null || !request.getMobileNumber().trim().matches("^\\d{10}$")) {
-            throw new RuntimeException("Invalid mobile number format. Must be 10 digits.");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "Invalid mobile number format. Must be 10 digits.");
         }
         
         // 2. Security Requirement: Every request must be bound to a unique deviceId
         if (request.getDeviceId() == null || request.getDeviceId().trim().isEmpty()) {
-            throw new RuntimeException("Device ID is required");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "Device ID is required");
         }
 
         // 3. Delegation: AuthService handles registration checks and OTP generation
@@ -61,7 +63,6 @@ public class AuthController {
 
         return ResponseEntity.ok(java.util.Map.of(
                 "message", "OTP sent successfully.",
-                "test_otp", result[0], // NOTE: Provided temporarily for testing; hide in production
                 "otpSessionToken", result[1])); // Bound to this specific device/session
     }
 
@@ -95,10 +96,12 @@ public class AuthController {
     public ResponseEntity<?> sendLoginOtp(@RequestBody OtpRequest request, jakarta.servlet.http.HttpServletRequest servletRequest) {
         // 1. Validation
         if (request.getMobileNumber() == null || !request.getMobileNumber().trim().matches("^\\d{10}$")) {
-            throw new RuntimeException("Invalid mobile number format. Must be 10 digits.");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "Invalid mobile number format. Must be 10 digits.");
         }
         if (request.getDeviceId() == null || request.getDeviceId().trim().isEmpty()) {
-            throw new RuntimeException("Device ID is required");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "Device ID is required");
         }
 
         // 2. Logic: AuthService checks for user existence and then issues OTP
@@ -108,7 +111,6 @@ public class AuthController {
 
         return ResponseEntity.ok(java.util.Map.of(
                 "message", "OTP sent successfully.",
-                "test_otp", result[0], // NOTE: Debug only
                 "otpSessionToken", result[1]));
     }
 
@@ -128,7 +130,8 @@ public class AuthController {
         if (request.getRegistrationToken() != null && !request.getRegistrationToken().isEmpty()) {
             // Case A: REGISTRATION Flow. Email is provided with a valid mobile-verified token.
             if (request.getEmail() == null || request.getEmail().isEmpty()) {
-                throw new RuntimeException("Email is required for registration.");
+                throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "Email is required for registration.");
             }
             // Return BOTH the OTP (for testing) and a new token with email-ready state
             String[] response = authService.sendEmailOtp(request.getEmail(),
@@ -138,7 +141,8 @@ public class AuthController {
         } else {
             // Case B: Direct OTP by mobile (e.g. recovery or legacy flows)
             if (request.getMobileNumber() == null || request.getMobileNumber().isEmpty()) {
-                throw new RuntimeException("Mobile number is required");
+                throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "Mobile number is required");
             }
             testOtp = authService.sendEmailOtp(request.getMobileNumber());
         }
@@ -148,7 +152,6 @@ public class AuthController {
 
         java.util.Map<String, String> responseBody = new java.util.HashMap<>();
         responseBody.put("message", "Email OTP sent successfully.");
-        responseBody.put("test_otp", testOtp);
         if (accessToken != null) {
             // This token is needed for the 'verify-email-registration-otp' step
             responseBody.put("accessToken", accessToken);
@@ -179,7 +182,6 @@ public class AuthController {
             logger.info("Email OTP resent to: {}", request.getEmail());
             java.util.Map<String, String> responseBody = new java.util.HashMap<>();
             responseBody.put("message", "Email OTP resent successfully.");
-            responseBody.put("test_otp", testOtp);
             if (accessToken != null) {
                 responseBody.put("accessToken", accessToken);
             }
@@ -187,19 +189,21 @@ public class AuthController {
         } else if (request.getMobileNumber() != null && !request.getMobileNumber().trim().isEmpty()) {
             // 2. Resend Mobile OTP
             if (!request.getMobileNumber().trim().matches("^\\d{10}$")) {
-                throw new RuntimeException("Invalid mobile number format. Must be 10 digits.");
+                throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "Invalid mobile number format. Must be 10 digits.");
             }
             if (request.getDeviceId() == null || request.getDeviceId().trim().isEmpty()) {
-                throw new RuntimeException("Device ID is required");
+                throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "Device ID is required");
             }
             String[] result = authService.resendOtp(request.getMobileNumber(), false, request.getDeviceId());
             logger.info("Registration Mobile OTP resent to: {}", request.getMobileNumber());
             return ResponseEntity.ok(java.util.Map.of(
                     "message", "Mobile OTP resent successfully.",
-                    "test_otp", result[0],
                     "otpSessionToken", result[1]));
         } else {
-            throw new RuntimeException("Either email or mobileNumber is required for resend-otp");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "Either email or mobileNumber is required for resend-otp");
         }
     }
 
@@ -212,21 +216,23 @@ public class AuthController {
         if (request.getMobileNumber() != null && !request.getMobileNumber().trim().isEmpty()) {
             // Validation
             if (!request.getMobileNumber().trim().matches("^\\d{10}$")) {
-                throw new RuntimeException("Invalid mobile number format. Must be 10 digits.");
+                throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "Invalid mobile number format. Must be 10 digits.");
             }
             if (request.getDeviceId() == null || request.getDeviceId().trim().isEmpty()) {
-                throw new RuntimeException("Device ID is required");
+                throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "Device ID is required");
             }
             // Logic: Issue fresh OTP while preserving sessionID if possible
             String[] result = authService.resendOtp(request.getMobileNumber(), true, request.getDeviceId());
             logger.info("Login Mobile OTP resent to: {}", request.getMobileNumber());
-
+ 
             return ResponseEntity.ok(java.util.Map.of(
                     "message", "Mobile OTP resent successfully.",
-                    "test_otp", result[0],
                     "otpSessionToken", result[1]));
         } else {
-            throw new RuntimeException("mobileNumber is required for login resend-otp");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "mobileNumber is required for login resend-otp");
         }
     }
 
@@ -239,7 +245,8 @@ public class AuthController {
             @RequestBody live.chronogram.auth.dto.VerifyEmailRegistrationRequest request) {
 
         if (request.getOtpCode() == null || !request.getOtpCode().trim().matches("^\\d{6}$")) {
-            throw new RuntimeException("OTP must be exactly 6 digits.");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "OTP must be exactly 6 digits.");
         }
 
         return ResponseEntity.ok(authService.verifyEmailOtpForRegistration(request.getEmail(), request.getOtpCode(),
@@ -259,7 +266,8 @@ public class AuthController {
     public ResponseEntity<?> verifyRegistrationOtp(@RequestBody LoginRequest loginRequest, HttpServletRequest request) {
         // 1. Mandatory format validation
         if (loginRequest.getOtpCode() == null || !loginRequest.getOtpCode().trim().matches("^\\d{6}$")) {
-            throw new RuntimeException("OTP must be exactly 6 digits.");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "OTP must be exactly 6 digits.");
         }
 
         // 2. Transaction: Verify and return the intermediate token
@@ -298,7 +306,8 @@ public class AuthController {
     public ResponseEntity<?> verifyLoginOtp(@RequestBody LoginRequest loginRequest, HttpServletRequest request) {
         // 1. Validation
         if (loginRequest.getOtpCode() == null || !loginRequest.getOtpCode().trim().matches("^\\d{6}$")) {
-            throw new RuntimeException("OTP must be exactly 6 digits.");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "OTP must be exactly 6 digits.");
         }
 
         // 2. Logic: Core authentication flow
@@ -372,7 +381,8 @@ public class AuthController {
 
         // 1. Validation
         if (request.getOtp() == null || !request.getOtp().trim().matches("^\\d{6}$")) {
-            throw new RuntimeException("OTP must be exactly 6 digits.");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "OTP must be exactly 6 digits.");
         }
 
         // 2. Transaction: Mark device as trusted and return JWTs
@@ -391,7 +401,8 @@ public class AuthController {
     public ResponseEntity<?> resendNewDeviceOtp(@RequestBody OtpRequest request) {
         // 1. Validation: The temporaryToken is used to identify the pending login session
         if (request.getTemporaryToken() == null || request.getTemporaryToken().trim().isEmpty()) {
-            throw new RuntimeException("Temporary token is required for resend.");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "Temporary token is required for resend.");
         }
 
         // 2. Logic: Generates a fresh OTP and a new temporary session token
@@ -403,7 +414,6 @@ public class AuthController {
 
         return ResponseEntity.ok(java.util.Map.of(
                 "message", "New Device OTP resent successfully to registered email.",
-                "test_otp", otp,
                 "temporaryToken", newToken));
     }
 
@@ -425,7 +435,6 @@ public class AuthController {
 
         java.util.Map<String, Object> responseBody = new java.util.HashMap<>();
         responseBody.put("message", "OTP sent to email.");
-        responseBody.put("test_otp", otp);
         responseBody.put("registrationToken", token);
 
         return ResponseEntity.ok(responseBody);
@@ -439,7 +448,8 @@ public class AuthController {
     public ResponseEntity<?> verifyEmailLink(@RequestBody live.chronogram.auth.dto.VerifyEmailRequest request) {
         // 1. Validation
         if (request.getOtp() == null || !request.getOtp().trim().matches("^\\d{6}$")) {
-            throw new RuntimeException("OTP must be exactly 6 digits.");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "OTP must be exactly 6 digits.");
         }
 
         // 2. Logic: Updates account state upon successful verification
@@ -463,7 +473,8 @@ public class AuthController {
 
         // 1. Strict Name Validation: Only alphabets and spaces (e.g., no emojis or numbers)
         if (request.getName() == null || !request.getName().trim().matches("^[a-zA-Z\\s]+$")) {
-            throw new RuntimeException("Validation Error: Name must contain only alphabetic characters and spaces.");
+            throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "Validation Error: Name must contain only alphabetic characters and spaces.");
         }
 
         // 2. Delegate to final user creation and session start

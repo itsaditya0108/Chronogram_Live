@@ -144,6 +144,12 @@ public class OtpService {
                     if (isResend && isRecentlySent) {
                         existing.setResendCount(currentSendCount + 1);
                         otpVerificationRepository.save(existing);
+
+                        // 🔥 BUG FIX: Actually SEND the email even on resend!
+                        if (target != null && target.contains("@")) {
+                            emailService.sendOtpEmail(target, existing.getOtpCode());
+                        }
+
                         return new String[] { existing.getOtpCode(), existing.getSessionId() };
                     }
 

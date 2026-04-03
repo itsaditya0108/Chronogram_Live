@@ -55,10 +55,22 @@ public class SecurityConfig {
                         
                         // Public Routes (Entry points for registration and info)
                         .requestMatchers("/api/app/**").permitAll() 
-                        .requestMatchers("/api/auth/**").permitAll() 
+                        .requestMatchers("/api/auth/admin/login").permitAll()
+                        .requestMatchers(
+                             "/api/auth/login/**", 
+                             "/api/auth/register/**", 
+                             "/api/auth/firebase-login", 
+                             "/api/auth/firebase-register", 
+                             "/api/auth/verify-otp",
+                             "/api/auth/resend-otp",
+                             "/api/auth/verify-new-device",
+                             "/api/auth/resend-new-device-otp",
+                             "/api/auth/complete-profile",
+                             "/api/auth/link-email"
+                        ).permitAll()
                         
-                        // Development Safety: Allow other requests or unmapped paths to avoid 401s during testing
-                        .anyRequest().permitAll()) 
+                        // Production Safety: Require authentication for everything else
+                        .anyRequest().authenticated()) 
                         
                 // 5. Traceability: Set Correlation ID before any other processing
                 .addFilterBefore(correlationIdFilter, UsernamePasswordAuthenticationFilter.class)

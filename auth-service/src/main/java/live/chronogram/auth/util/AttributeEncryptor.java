@@ -44,27 +44,41 @@ public class AttributeEncryptor implements AttributeConverter<String, String> {
 
     @Override
     public String convertToDatabaseColumn(String attribute) {
-        if (attribute == null || SECRET_KEY == null)
+        if (attribute == null)
+            return null;
+            
+        if (SECRET_KEY == null) {
+            // Log a warning if the key is missing (e.g. during Hibernate boot before Spring injection)
+            System.err.println("[AttributeEncryptor] ERROR: SECRET_KEY is null during encryption. Baseline plaintext returned.");
             return attribute;
+        }
+            
         try {
-            Key key = new SecretKeySpec(SECRET_KEY.getBytes(), AES);
+            Key key = new SecretKeySpec(SECRET_KEY.getBytes(java.nio.charset.StandardCharsets.UTF_8), AES);
             Cipher cipher = Cipher.getInstance(AES);
             cipher.init(Cipher.ENCRYPT_MODE, key);
-            return Base64.getEncoder().encodeToString(cipher.doFinal(attribute.getBytes()));
+            return Base64.getEncoder().encodeToString(cipher.doFinal(attribute.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         } catch (Exception e) {
-            return attribute; // Fallback to plaintext if encryption fails
+            System.err.println("[AttributeEncryptor] Encryption failed: " + e.getMessage());
+            return attribute; // Fallback to plaintext
         }
     }
 
     @Override
     public String convertToEntityAttribute(String dbData) {
-        if (dbData == null || SECRET_KEY == null)
+        if (dbData == null)
+            return null;
+            
+        if (SECRET_KEY == null) {
+            System.err.println("[AttributeEncryptor] ERROR: SECRET_KEY is null during decryption. Returning raw DB data.");
             return dbData;
+        }
+            
         try {
-            Key key = new SecretKeySpec(SECRET_KEY.getBytes(), AES);
+            Key key = new SecretKeySpec(SECRET_KEY.getBytes(java.nio.charset.StandardCharsets.UTF_8), AES);
             Cipher cipher = Cipher.getInstance(AES);
             cipher.init(Cipher.DECRYPT_MODE, key);
-            return new String(cipher.doFinal(Base64.getDecoder().decode(dbData)));
+            return new String(cipher.doFinal(Base64.getDecoder().decode(dbData)), java.nio.charset.StandardCharsets.UTF_8);
         } catch (Exception e) {
             // Fallback: If decryption fails (e.g. data is plaintext), return as-is
             return dbData;
