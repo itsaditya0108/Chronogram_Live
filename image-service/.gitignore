@@ -31,3 +31,12 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Secrets ###
+**/application.properties
+**/application.yml
+**/.env
+**/.env.*
+**/firebase.json
+**/logback.xml
+**/logback-spring.xml

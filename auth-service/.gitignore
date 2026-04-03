@@ -40,4 +40,10 @@ build/
 .vscode/
 
 ### Secrets ###
-src/main/resources/application.properties
+**/application.properties
+**/application.yml
+**/.env
+**/.env.*
+**/firebase.json
+**/logback.xml
+**/logback-spring.xml
