@@ -32,7 +32,7 @@ public class EmailService {
      * @param otp     The 6-digit code.
      */
     @Async("emailTaskExecutor")
-    public void sendOtpEmail(String toEmail, String otp) {
+    public void sendOtpEmail(String toEmail, String otp, int validityMinutes) {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
@@ -40,7 +40,7 @@ public class EmailService {
             helper.setFrom(new InternetAddress("chronogram.live@gmail.com", "Chronogram Live"));
             helper.setTo(toEmail);
             helper.setSubject("Your Verification Code - Chronogram Live");
-            helper.setText(buildOtpTemplate(otp), true);
+            helper.setText(buildOtpTemplate(otp, validityMinutes), true);
 
             mailSender.send(message);
             logger.info("OTP email sent successfully to: {}", toEmail);
@@ -62,7 +62,7 @@ public class EmailService {
      * Background: Dark (#121212)
      * Primary Accent: Orange (#FF9933)
      */
-    private String buildOtpTemplate(String otp) {
+    private String buildOtpTemplate(String otp, int validityMinutes) {
         return """
                 <!DOCTYPE html>
                 <html>
@@ -95,7 +95,7 @@ public class EmailService {
                                 <h2 class="otp-code">%s</h2>
                             </div>
 
-                            <p>This code is valid for <span class="accent">5 minutes</span>.</p>
+                            <p>This code is valid for <span class="accent">%d minutes</span>.</p>
                             <p style="color: #999; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
                         </div>
                         <div class="footer">
@@ -106,6 +106,6 @@ public class EmailService {
                 </body>
                 </html>
                 """
-                .formatted(otp);
+                .formatted(otp, validityMinutes);
     }
 }

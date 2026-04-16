@@ -8,6 +8,11 @@ import org.springframework.scheduling.annotation.EnableScheduling; // Scheduling
 @SpringBootApplication // Marks this class as the primary configuration and entry point
 public class ImageServiceApplication { // Main class for the Image Service
 
+	@jakarta.annotation.PostConstruct
+	public void init() {
+		java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
+	}
+
 	// The main method serves as the entry point for the Java application
 	public static void main(String[] args) {
 		// Launches the Spring Boot application, creating the ApplicationContext

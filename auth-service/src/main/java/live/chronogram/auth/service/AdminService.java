@@ -60,7 +60,9 @@ public class AdminService {
     private String videoServiceUrl;
 
     public List<User> getAllUsers() {
-        return userRepository.findAll();
+        return userRepository.findAll().stream()
+                .filter(u -> !Boolean.TRUE.equals(u.getIsDeleted()))
+                .toList();
     }
 
     public List<User> getPendingUsers() {
@@ -185,18 +187,26 @@ public class AdminService {
                 // Fetch Image Storage
                 long photoBytes = 0;
                 try {
-                    String imgUrl = imageServiceUrl + "/internal/storage/user/" + user.getUserId();
+                    String imgUrl = imageServiceUrl.replaceAll("/+$", "") + "/internal/storage/user/" + user.getUserId();
                     Map<String, Object> imgRes = restTemplate.getForObject(imgUrl, Map.class);
-                    if (imgRes != null) photoBytes = ((Number) imgRes.get("photoBytes")).longValue();
+                    if (imgRes != null && imgRes.get("photoBytes") != null) photoBytes = ((Number) imgRes.get("photoBytes")).longValue();
                 } catch (Exception e) { logger.warn("Image sync failed for user {}: {}", user.getUserId(), e.getMessage()); }
 
                 // Fetch Video Storage
                 long videoBytes = 0;
                 try {
-                    String vidUrl = videoServiceUrl + "/internal/storage/user/" + user.getUserId();
+                    String vidUrl = videoServiceUrl.replaceAll("/+$", "") + "/internal/storage/user/" + user.getUserId();
+                    logger.info("Syncing video storage from: {}", vidUrl);
                     Map<String, Object> vidRes = restTemplate.getForObject(vidUrl, Map.class);
-                    if (vidRes != null) videoBytes = ((Number) vidRes.get("totalBytes")).longValue();
-                } catch (Exception e) { logger.warn("Video sync failed for user {}: {}", user.getUserId(), e.getMessage()); }
+                    if (vidRes != null) {
+                        // video-service uses totalBytes for total storage
+                        Object vBytes = vidRes.get("totalBytes");
+                        if (vBytes != null) {
+                            videoBytes = ((Number) vBytes).longValue();
+                        }
+                        logger.info("User {}: Video bytes synced = {}", user.getUserId(), videoBytes);
+                    }
+                } catch (Exception e) { logger.warn("Video sync failed for user {}: {} (URL: {})", user.getUserId(), e.getMessage(), videoServiceUrl); }
 
                 StorageUsage usage = storageUsageRepository.findById(user.getUserId())
                         .orElse(new StorageUsage(user.getUserId()));

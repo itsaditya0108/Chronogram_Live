@@ -38,6 +38,10 @@ import java.util.zip.ZipInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
+import java.util.UUID;
 
 @Service
 public class ImageServiceImpl implements IImageService {
@@ -52,6 +56,9 @@ public class ImageServiceImpl implements IImageService {
     private final EncryptionService encryptionService;
     private final ProfilePictureRepository profilePictureRepository;
     private final FileStorageService fileStorageService;
+    
+    @Value("${image.storage.base-path:./data/image-service}")
+    private String storagePath;
 
     @Autowired
     public ImageServiceImpl(ImageRepository imageRepository,
@@ -125,96 +132,137 @@ public class ImageServiceImpl implements IImageService {
             if (file.isEmpty()) throw new RuntimeException("FILE_EMPTY");
         }
 
-        List<UploadItem> itemsToProcess = new ArrayList<>();
+        List<TempUploadItem> itemsToProcess = new ArrayList<>();
         List<String> activeFormats = getActiveSupportedFormats();
 
-        for (MultipartFile file : files) {
-            String originalName = file.getOriginalFilename();
-            if (originalName == null || originalName.trim().isEmpty()) { skippedCount++; errors.add("No name skipped"); continue; }
-            String ext = getExtension(originalName).toLowerCase();
-            if (MALICIOUS_EXTENSIONS.contains(ext)) throw new RuntimeException("SECURITY_THREAT");
-            if (file.getSize() > 15728640) { skippedCount++; errors.add("File '" + originalName + "': Exceeds size limit (15MB)"); continue; }
+        Path tempDir = Paths.get(storagePath, "temp");
+        try {
+            if (!Files.exists(tempDir)) Files.createDirectories(tempDir);
 
-            if (originalName.toLowerCase().endsWith(".zip")) {
-                try (ZipInputStream zis = new ZipInputStream(file.getInputStream())) {
-                    ZipEntry entry;
-                    while ((entry = zis.getNextEntry()) != null) {
-                        if (entry.isDirectory()) continue;
-                        String entryName = entry.getName();
-                        if (entryName.contains("/")) entryName = entryName.substring(entryName.lastIndexOf('/') + 1);
-                        if (entryName.isEmpty()) continue;
-                        totalFilesParsed++;
-                        String entryExt = getExtension(entryName).toLowerCase();
-                        if (activeFormats.contains(entryExt)) {
-                            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                            byte[] buffer = new byte[1048576]; 
-                            int len;
-                            while ((len = zis.read(buffer)) > 0) baos.write(buffer, 0, len);
-                            byte[] content = baos.toByteArray();
-                            if (content.length > 15728640) { skippedCount++; errors.add("ZIP Entry '" + entryName + "': Exceeds size limit (15MB)"); continue; }
-                            itemsToProcess.add(new UploadItem(entryName, content, "image/" + (entryExt.startsWith(".") ? entryExt.substring(1) : entryExt)));
-                        } else { skippedCount++; errors.add("ZIP File '" + entryName + "': Unsupported format '" + entryExt + "'."); }
-                    }
-                } catch (IOException e) { skippedCount++; errors.add("ZIP Error: " + e.getMessage()); }
-            } else {
-                totalFilesParsed++;
-                if (activeFormats.contains(ext)) {
-                    try { itemsToProcess.add(new UploadItem(originalName, file.getBytes(), file.getContentType())); }
-                    catch (IOException e) { skippedCount++; errors.add("Read Error: " + e.getMessage()); }
-                } else { skippedCount++; errors.add("File '" + originalName + "': Unsupported format '" + ext + "'."); }
+            for (MultipartFile file : files) {
+                String originalName = file.getOriginalFilename();
+                if (originalName == null || originalName.trim().isEmpty()) { skippedCount++; errors.add("No name skipped"); continue; }
+                String ext = getExtension(originalName).toLowerCase();
+                if (MALICIOUS_EXTENSIONS.contains(ext)) throw new RuntimeException("SECURITY_THREAT");
+                if (file.getSize() > 15728640) { skippedCount++; errors.add("File '" + originalName + "': Exceeds size limit (15MB)"); continue; }
+
+                if (originalName.toLowerCase().endsWith(".zip")) {
+                    try (ZipInputStream zis = new ZipInputStream(file.getInputStream())) {
+                        ZipEntry entry;
+                        while ((entry = zis.getNextEntry()) != null) {
+                            if (entry.isDirectory()) continue;
+                            String entryName = entry.getName();
+                            if (entryName.contains("/")) entryName = entryName.substring(entryName.lastIndexOf('/') + 1);
+                            if (entryName.isEmpty()) continue;
+                            
+                            String entryExt = getExtension(entryName).toLowerCase();
+                            if (activeFormats.contains(entryExt)) {
+                                totalFilesParsed++;
+                                Path tFile = Files.createTempFile(tempDir, "bulk_zip_", ".tmp");
+                                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                                long entrySize = 0;
+                                try (InputStream entryIs = new DigestInputStream(zis, digest);
+                                     OutputStream os = Files.newOutputStream(tFile)) {
+                                    byte[] buffer = new byte[8192];
+                                    int read;
+                                    while ((read = entryIs.read(buffer)) != -1) {
+                                        os.write(buffer, 0, read);
+                                        entrySize += read;
+                                    }
+                                }
+                                if (entrySize > 15728640) {
+                                    Files.deleteIfExists(tFile);
+                                    skippedCount++;
+                                    errors.add("ZIP Entry '" + entryName + "': Exceeds size limit (15MB)");
+                                    continue;
+                                }
+                                itemsToProcess.add(new TempUploadItem(entryName, tFile, "image/" + (entryExt.startsWith(".") ? entryExt.substring(1) : entryExt), bytesToHex(digest.digest()), entrySize));
+                            } else { skippedCount++; errors.add("ZIP File '" + entryName + "': Unsupported format '" + entryExt + "'."); }
+                        }
+                    } catch (IOException e) { skippedCount++; errors.add("ZIP Error: " + e.getMessage()); }
+                } else {
+                    totalFilesParsed++;
+                    if (activeFormats.contains(ext)) {
+                        try {
+                            Path tFile = Files.createTempFile(tempDir, "bulk_file_", ".tmp");
+                            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                            try (InputStream is = new DigestInputStream(file.getInputStream(), digest);
+                                 OutputStream os = Files.newOutputStream(tFile)) {
+                                byte[] buffer = new byte[8192];
+                                int read;
+                                while ((read = is.read(buffer)) != -1) {
+                                    os.write(buffer, 0, read);
+                                }
+                            }
+                            itemsToProcess.add(new TempUploadItem(originalName, tFile, file.getContentType(), bytesToHex(digest.digest()), Files.size(tFile)));
+                        } catch (IOException e) { skippedCount++; errors.add("Read Error: " + e.getMessage()); }
+                    } else { skippedCount++; errors.add("File '" + originalName + "': Unsupported format '" + ext + "'."); }
+                }
             }
-        }
 
-        if (itemsToProcess.isEmpty() && totalFilesParsed == 0) throw new RuntimeException("NO_VALID_IMAGES_PROVIDED");
+            if (itemsToProcess.isEmpty() && totalFilesParsed == 0) throw new RuntimeException("NO_VALID_IMAGES_PROVIDED");
 
-        for (UploadItem item : itemsToProcess) {
-            try {
-                String hash = com.company.image_service.util.HashUtil.sha256Hex(item.content);
-                Optional<Image> existing = imageRepository.findFirstByUserIdAndContentHashAndIsDeletedFalseOrderByCreatedTimestampDesc(userId, hash);
-                if (existing.isPresent()) {
-                    alreadyUploadedCount++;
-                    ImageResponseDto dto = ImageMapper.toDto(existing.get());
-                    dto.setStatus("ALREADY_EXISTS");
+            for (TempUploadItem item : itemsToProcess) {
+                try {
+                    String hash = item.hash;
+                    Optional<Image> existing = imageRepository.findFirstByUserIdAndContentHashAndIsDeletedFalseOrderByCreatedTimestampDesc(userId, hash);
+                    if (existing.isPresent()) {
+                        alreadyUploadedCount++;
+                        ImageResponseDto dto = ImageMapper.toDto(existing.get());
+                        dto.setStatus("ALREADY_EXISTS");
+                        allImages.add(dto);
+                        continue;
+                    }
+
+                    BufferedImage source;
+                    try (InputStream is = Files.newInputStream(item.path)) {
+                        if (item.originalName.toLowerCase().endsWith(".svg") || item.originalName.toLowerCase().endsWith(".svgz")) {
+                            source = null;
+                        } else {
+                            source = ImageValidationUtil.validateAndRead(is, item.size, 15728640, item.originalName);
+                        }
+                    }
+
+                    StoredImageResult result;
+                    try (InputStream is = Files.newInputStream(item.path)) {
+                        result = fileStorageService.store(is, item.originalName, userId, type, source);
+                    }
+
+                    long encryptedTotalSize = result.getTotalEncryptedSize();
+
+                    Image image = new Image();
+                    image.setUserId(userId);
+                    image.setOriginalFilename(item.originalName);
+                    image.setStoredFilename(result.getStoredFilename());
+                    image.setStoragePath(result.getOriginalPath()); 
+                    image.setThumbnailPath(result.getThumbnailPath() != null ? result.getThumbnailPath() : result.getOriginalPath());
+                    image.setWidth(result.getWidth());
+                    image.setHeight(result.getHeight());
+                    image.setContentType(item.contentType);
+                    image.setFileSize(encryptedTotalSize);
+                    image.setIsDeleted(false);
+                    image.setContentHash(hash);
+                    imageRepository.save(image);
+                    
+                    ImageResponseDto dto = ImageMapper.toDto(image);
+                    dto.setStatus("UPLOADED");
                     allImages.add(dto);
-                    continue;
-                }
+                    syncedCount++;
 
-                BufferedImage source;
-                try (InputStream is = new ByteArrayInputStream(item.content)) {
-                    if (item.originalName.toLowerCase().endsWith(".svg") || item.originalName.toLowerCase().endsWith(".svgz")) {
-                        source = null;
-                    } else {
-                        source = ImageValidationUtil.validateAndRead(is, (long) item.content.length, 15728640, item.originalName);
+                    // 9. IMMEDIATE CLEANUP ON SUCCESS (Zero disk footprint for verified sync)
+                    try {
+                        Files.deleteIfExists(item.path);
+                    } catch (IOException e) {
+                        logger.warn("Failed to delete temp file {} after success: {}", item.path, e.getMessage());
                     }
+                } catch (Exception e) {
+                    logger.error("Bulk process failed for item: {}", item.originalName, e);
+                    skippedCount++;
+                    errors.add("File '" + item.originalName + "': " + e.getMessage());
                 }
-
-                StoredImageResult result;
-                try (InputStream is = new ByteArrayInputStream(item.content)) {
-                    result = fileStorageService.store(is, item.originalName, userId, type, source);
-                }
-
-                Image image = new Image();
-                image.setUserId(userId);
-                image.setOriginalFilename(item.originalName);
-                image.setStoredFilename(result.getStoredFilename());
-                image.setStoragePath(result.getOriginalPath()); // This is now a Key
-                image.setThumbnailPath(result.getThumbnailPath() != null ? result.getThumbnailPath() : result.getOriginalPath());
-                image.setWidth(result.getWidth());
-                image.setHeight(result.getHeight());
-                image.setContentType(item.contentType);
-                image.setFileSize((long) item.content.length);
-                image.setIsDeleted(false);
-                image.setContentHash(hash);
-                imageRepository.save(image);
-                
-                ImageResponseDto dto = ImageMapper.toDto(image);
-                dto.setStatus("UPLOADED");
-                allImages.add(dto);
-                syncedCount++;
-            } catch (Exception e) {
-                skippedCount++;
-                errors.add("File '" + item.originalName + "': " + e.getMessage());
             }
+        } catch (Exception mainEx) {
+            throw new RuntimeException("Bulk upload initialization failed: " + mainEx.getMessage(), mainEx);
         }
 
         return new ImageBulkUploadResponseDto(totalFilesParsed, syncedCount, skippedCount, alreadyUploadedCount, allImages, errors);
@@ -307,16 +355,26 @@ public class ImageServiceImpl implements IImageService {
         return dot == -1 ? "" : filename.substring(dot).toLowerCase();
     }
 
-    private static class UploadItem {
+    private String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+
+    private static class TempUploadItem {
         String originalName;
-        byte[] content;
+        Path path;
         String contentType;
+        String hash;
         long size;
-        UploadItem(String originalName, byte[] content, String contentType) {
+        TempUploadItem(String originalName, Path path, String contentType, String hash, long size) {
             this.originalName = originalName;
-            this.content = content;
+            this.path = path;
             this.contentType = contentType;
-            this.size = content.length;
+            this.hash = hash;
+            this.size = size;
         }
     }
 }

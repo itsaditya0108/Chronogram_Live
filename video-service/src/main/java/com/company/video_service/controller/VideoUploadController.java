@@ -35,7 +35,7 @@ public class VideoUploadController { // Controller class for managing video uplo
         // Endpoint to initialize a new video upload session
         @PostMapping("/init")
         public ResponseEntity<VideoUploadInitResponse> initUpload(
-                        @RequestHeader("X-USER-ID") Long userId, // Extract User ID from header
+                        @RequestAttribute("userId") Long userId, // Extract User ID from request attribute
                         @Valid @RequestBody VideoUploadInitRequest request) { // Validate and bind request body
                 // Call service to initialize upload and return response
                 return ResponseEntity.ok(videoUploadService.initUpload(userId, request));
@@ -44,7 +44,7 @@ public class VideoUploadController { // Controller class for managing video uplo
         // Endpoint to upload a specific chunk of the video
         @PutMapping("/{uploadUid}/chunks/{chunkIndex}")
         public ResponseEntity<VideoChunkUploadResponse> uploadChunk(
-                        @RequestHeader("X-USER-ID") Long userId, // Extract User ID from header
+                        @RequestAttribute("userId") Long userId, // Extract User ID from request attribute
                         @PathVariable String uploadUid, // Extract upload session UID from URL
                         @PathVariable Integer chunkIndex, // Extract chunk index from URL
                         @RequestHeader(value = "X-Chunk-SHA256", required = false) String sha256, // Optional SHA256
@@ -58,7 +58,7 @@ public class VideoUploadController { // Controller class for managing video uplo
         // Endpoint to check the status of an ongoing upload
         @GetMapping("/{uploadUid}/status")
         public ResponseEntity<VideoUploadStatusResponse> getUploadStatus(
-                        @RequestHeader("X-USER-ID") Long userId, // Extract User ID from header
+                        @RequestAttribute("userId") Long userId, // Extract User ID from request attribute
                         @PathVariable String uploadUid) { // Extract upload UID
                 // Call service to get upload status
                 return ResponseEntity.ok(videoUploadService.getUploadStatus(userId, uploadUid));
@@ -67,7 +67,7 @@ public class VideoUploadController { // Controller class for managing video uplo
         // Endpoint to finalize the upload after all chunks are sent
         @PostMapping("/{uploadUid}/finalize")
         public ResponseEntity<VideoFinalizeJobResponse> finalizeUpload(
-                        @RequestHeader("X-USER-ID") Long userId, // Extract User ID
+                        @RequestAttribute("userId") Long userId, // Extract User ID from request attribute
                         @PathVariable String uploadUid) { // Extract upload UID
                 // Call service to finalize upload process
                 return ResponseEntity.ok(videoUploadService.finalizeUpload(userId, uploadUid));
@@ -76,7 +76,7 @@ public class VideoUploadController { // Controller class for managing video uplo
         // Endpoint to get the final result of the upload
         @GetMapping("/{uploadUid}/result")
         public ResponseEntity<VideoUploadResultResponse> getUploadResult(
-                        @RequestHeader("X-USER-ID") Long userId, // Extract User ID
+                        @RequestAttribute("userId") Long userId, // Extract User ID from request attribute
                         @PathVariable String uploadUid) { // Extract upload UID
 
                 // Find the upload session by UID, throw error if not found
@@ -109,6 +109,15 @@ public class VideoUploadController { // Controller class for managing video uplo
                 // Return success response with video ID
                 return ResponseEntity.ok(
                                 new VideoUploadResultResponse(uploadUid, "COMPLETED", video.getVideoUid(), null));
+        }
+
+        // Endpoint for high-performance bulk upload (Sync)
+        @PostMapping("/bulk")
+        public ResponseEntity<java.util.List<com.company.video_service.dto.VideoBulkUploadResponseItem>> bulkUpload(
+                        @RequestAttribute(value = "userId", required = true) Long userId,
+                        @RequestParam("files") org.springframework.web.multipart.MultipartFile[] files) {
+                // Call service to process multiple files in parallel
+                return ResponseEntity.ok(videoUploadService.bulkUpload(userId, files));
         }
 
 }

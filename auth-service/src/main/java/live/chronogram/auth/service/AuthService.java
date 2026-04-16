@@ -89,6 +89,9 @@ public class AuthService {
     @Value("${app.otp.backend-mobile-generation-enabled:true}")
     private boolean backendMobileOtpEnabled;
 
+    @Value("${app.otp.lock-duration-minutes:120}")
+    private int lockDurationMinutes;
+
     /**
      * Hashes a refresh token using SHA-256 before storing it in the database.
      * 
@@ -203,21 +206,20 @@ public class AuthService {
 
         String otpCode;
         String sessionId;
+        String expiresInMinutes = "2";
+        String attemptsRemaining = "2";
+
+        // Case: Standard or Firebase flow. 
+        // We now utilize OtpService even for Firebase flows to track cooldown/rate-limits.
+        String[] otpResponse = generateOtpWithLockout(sanitizedMobile, OtpType.MOBILE_LOGIN, userOpt, false, skipSms);
+        otpCode = (skipSms && !backendMobileOtpEnabled) ? "" : otpResponse[0];
+        sessionId = otpResponse[1];
+        expiresInMinutes = otpResponse[2];
+        attemptsRemaining = otpResponse[3];
 
         if (skipSms) {
-            // Case: Firebase handles SMS. We skip MySQL generation entirely to avoid
-            // conflicts (double OTP/rate limits).
-            // We still generate a random sessionId for the JWT token to maintain session
-            // structure.
-            otpCode = "";
-            sessionId = java.util.UUID.randomUUID().toString();
-            logger.info("Firebase flow detected (skipSms=true). Skipping MySQL OTP generation for: {}",
+            logger.info("Firebase flow detected (skipSms=true). Using shell OTP for metadata tracking for: {}",
                     sanitizedMobile);
-        } else {
-            // Case: Standard flow. Backend generates and stores OTP in MySQL.
-            String[] otpResponse = generateOtpWithLockout(sanitizedMobile, OtpType.MOBILE_LOGIN, userOpt);
-            otpCode = otpResponse[0];
-            sessionId = otpResponse[1];
         }
 
         // 4. Create a short-lived JWT that binds the phone number, deviceId, and
@@ -227,7 +229,7 @@ public class AuthService {
         String sessionToken = jwtTokenProvider.createOtpSessionToken(sanitizedMobile, deviceId, sessionId);
 
         updateRegistrationProgressForNewUser(sanitizedMobile, "OTP_SENT");
-        return new String[] { otpCode, sessionToken };
+        return new String[] { otpCode, sessionToken, expiresInMinutes, attemptsRemaining };
     }
 
     private void updateRegistrationProgressForNewUser(String mobile, String step) {
@@ -258,7 +260,8 @@ public class AuthService {
      * @param deviceId       The ID of the device requesting the resend.
      * @return Array of [otpCode, otpSessionToken].
      */
-    public String[] resendOtp(String mobileNumber, boolean isLoginAttempt, String deviceId) {
+    @Transactional(noRollbackFor = AuthException.class)
+    public String[] resendOtp(String mobileNumber, boolean isLoginAttempt, String deviceId, boolean skipSms) {
         // 1. Normalize the mobile number (No DB needed)
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
 
@@ -266,14 +269,16 @@ public class AuthService {
         Optional<User> userOpt = findAndValidateUserForResend(sanitizedMobile, isLoginAttempt);
 
         // 3. Generate a NEW OTP code (Synchronization handled inside OtpService)
-        String[] otpResponse = generateOtpWithLockout(sanitizedMobile, OtpType.MOBILE_LOGIN, userOpt, true);
-        String otpCode = otpResponse[0];
+        String[] otpResponse = generateOtpWithLockout(sanitizedMobile, OtpType.MOBILE_LOGIN, userOpt, true, skipSms);
+        String otpCode = (skipSms && !backendMobileOtpEnabled) ? "" : otpResponse[0];
         String sessionId = otpResponse[1];
+        String expiresInMinutes = otpResponse[2];
+        String attemptsRemaining = otpResponse[3];
 
         // 4. Issue the session token binding the mobile and device
         String sessionToken = jwtTokenProvider.createOtpSessionToken(sanitizedMobile, deviceId, sessionId);
 
-        return new String[] { otpCode, sessionToken };
+        return new String[] { otpCode, sessionToken, expiresInMinutes, attemptsRemaining };
     }
 
     /**
@@ -342,16 +347,12 @@ public class AuthService {
      * @throws RuntimeException If user or email is not found.
      */
     @Transactional(noRollbackFor = AuthException.class)
-    public String sendEmailOtp(String mobileNumber) {
-        // 1. Sanitize the mobile number input
+    public String[] sendEmailOtp(String mobileNumber) {
         String sanitizedMobile = sanitizePhoneNumber(mobileNumber);
 
-        // 2. Fetch the user. Throws exception if user doesn't exist (expected for
-        // recovery/linking).
         User user = userRepository.findByMobileNumber(sanitizedMobile)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
-        // 3. Security Check: Is the account locked?
         if (user.getLockedUntil() != null && user.getLockedUntil().isAfter(LocalDateTime.now())) {
             long minutesLeft = java.time.Duration.between(LocalDateTime.now(), user.getLockedUntil())
                     .toMinutes();
@@ -362,11 +363,7 @@ public class AuthService {
                     "Account locked. Please try again after " + minutesLeft + " minute(s).");
         }
 
-        // 4. Generate the Email OTP using the user's primary registered email
-        String[] otpResponse = generateOtpWithLockout(user.getEmail(), OtpType.EMAIL_VERIFICATION, Optional.of(user));
-
-        // Return only the code (sending should be handled via email logic elsewhere)
-        return otpResponse[0];
+        return generateOtpWithLockout(user.getEmail(), OtpType.EMAIL_VERIFICATION, Optional.of(user));
     }
 
     /**
@@ -434,7 +431,7 @@ public class AuthService {
         String token = jwtTokenProvider.createRegistrationToken(mobileNumber, formattedEmail, "EMAIL_REQUIRED",
                 sessionId);
 
-        return new String[] { otp, token };
+        return new String[] { otp, token, otpResponse[2], otpResponse[3] };
     }
 
     /**
@@ -499,7 +496,7 @@ public class AuthService {
 
         // 6. Generate a NEW OTP with lockout/resend tracking
         String[] otpResponse = generateOtpWithLockout(user.getEmail(), OtpType.NEW_DEVICE_VERIFICATION,
-                Optional.of(user), true);
+                Optional.of(user), true, false);
         String newOtp = otpResponse[0];
         String newSessionId = otpResponse[1];
 
@@ -508,7 +505,7 @@ public class AuthService {
         String newToken = jwtTokenProvider.createRegistrationToken(mobileNumber, user.getEmail(),
                 "DEVICE_APPROVAL_REQUIRED", newSessionId);
 
-        return new String[] { newOtp, newToken };
+        return new String[] { newOtp, newToken, otpResponse[2], otpResponse[3] };
     }
 
     /**
@@ -518,14 +515,11 @@ public class AuthService {
      * @return The generated OTP string.
      */
     @Transactional(noRollbackFor = AuthException.class)
-    public String resendEmailOtpByEmail(String email) {
-        String formattedEmail = validateAndFormatEmail(email);
-        User user = userRepository.findByEmail(formattedEmail)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+    public String[] resendEmailOtpByEmail(String email) {
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new AuthException(HttpStatus.NOT_FOUND, "User not found with this email."));
 
-        String[] otpResponse = generateOtpWithLockout(user.getEmail(), OtpType.EMAIL_VERIFICATION, Optional.of(user),
-                true);
-        return otpResponse[0];
+        return generateOtpWithLockout(user.getEmail(), OtpType.EMAIL_VERIFICATION, Optional.of(user), true, false);
     }
 
     /**
@@ -648,7 +642,7 @@ public class AuthService {
         // requesting the OTP
         if (!sanitizedMobile.equals(sessionMobile)) {
             throw new AuthException(HttpStatus.FORBIDDEN,
-                    "OTP session mismatch: This token belongs to a different mobile number or has expired. Please request a new OTP.");
+                    "The session has expired or belongs to a different mobile number. Please request a new OTP.");
         }
         if (!deviceId.equals(sessionDeviceId)) {
             throw new AuthException(HttpStatus.FORBIDDEN,
@@ -688,7 +682,7 @@ public class AuthService {
                     blockedStatus.ifPresent(status -> {
                         userToBlock.setUserStatus(status);
                         userToBlock.setStatusReason("Exceeded maximum OTP attempts.");
-                        userToBlock.setLockedUntil(LocalDateTime.now().plusMinutes(15));
+                        userToBlock.setLockedUntil(LocalDateTime.now().plusMinutes(lockDurationMinutes));
                         userRepository.save(userToBlock);
 
                         // Audit Log for the failure
@@ -706,7 +700,7 @@ public class AuthService {
             userOpt.ifPresent(u -> saveLoginHistory(u, null, ipAddress, userAgent, false, "INVALID_OTP", latitude,
                     longitude, city, country));
             throw new AuthException(HttpStatus.UNAUTHORIZED,
-                    "Invalid Mobile OTP");
+                    "Incorrect OTP. Please check the code and try again.");
         }
 
         // 2. Find or Create User
@@ -790,8 +784,8 @@ public class AuthService {
         }
 
         if (user.getLockedUntil() != null) {
-            if (user.getLockedUntil().isAfter(LocalDateTime.now())) {
-                long minutesLeft = java.time.Duration.between(LocalDateTime.now(), user.getLockedUntil())
+            if (user.getLockedUntil().isAfter(LocalDateTime.now(java.time.ZoneOffset.UTC))) {
+                long minutesLeft = java.time.Duration.between(LocalDateTime.now(java.time.ZoneOffset.UTC), user.getLockedUntil())
                         .toMinutes();
                 if (minutesLeft == 0)
                     minutesLeft = 1;
@@ -942,7 +936,7 @@ public class AuthService {
         }
 
         // Update last login
-        user.setLastLoginAt(LocalDateTime.now());
+        user.setLastLoginAt(LocalDateTime.now(java.time.ZoneOffset.UTC));
         userRepository.save(user);
 
         // 3. Issue Security Tokens
@@ -954,7 +948,7 @@ public class AuthService {
         session.setUser(user);
         session.setUserDevice(device);
         session.setRefreshTokenHash(hashRefreshToken(refreshToken));
-        session.setExpiresTimestamp(LocalDateTime.now().plusNanos(refreshTokenValidityInMs * 1000000));
+        session.setExpiresTimestamp(LocalDateTime.now(java.time.ZoneOffset.UTC).plusNanos(refreshTokenValidityInMs * 1000000));
         session.setIsRevoked(false);
         session.setIpAddress(ipAddress);
         session.setLatitude(latitude);
@@ -1024,7 +1018,7 @@ public class AuthService {
         // Since we store tokens as SHA-256 hashes, we must hash the incoming token and
         // compare.
         List<UserSession> activeSessions = userSessionRepository.findByUser_UserId(userId).stream()
-                .filter(s -> !s.getIsRevoked() && s.getExpiresTimestamp().isAfter(LocalDateTime.now()))
+                .filter(s -> !s.getIsRevoked() && s.getExpiresTimestamp().isAfter(LocalDateTime.now(java.time.ZoneOffset.UTC)))
                 .toList();
 
         UserSession matchedSession = activeSessions.stream()
@@ -1206,7 +1200,7 @@ public class AuthService {
                 blockedStatus.ifPresent(status -> {
                     user.setUserStatus(status);
                     user.setStatusReason("Exceeded maximum OTP attempts during new device verification.");
-                    user.setLockedUntil(LocalDateTime.now().plusMinutes(15));
+                    user.setLockedUntil(LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(lockDurationMinutes));
                     userRepository.save(user);
                 });
             }
@@ -1241,7 +1235,7 @@ public class AuthService {
         session.setUser(user);
         session.setUserDevice(device);
         session.setRefreshTokenHash(hashRefreshToken(refreshToken));
-        session.setExpiresTimestamp(LocalDateTime.now().plusNanos(refreshTokenValidityInMs * 1000000));
+        session.setExpiresTimestamp(LocalDateTime.now(java.time.ZoneOffset.UTC).plusNanos(refreshTokenValidityInMs * 1000000));
         session.setIsRevoked(false);
         session.setIpAddress(ipAddress);
         session.setLatitude(request.getLatitude());
@@ -1320,7 +1314,7 @@ public class AuthService {
         String token = jwtTokenProvider.createRegistrationToken(mobileNumber, formattedEmail, "EMAIL_REQUIRED",
                 sessionId);
 
-        return new String[] { otp, token };
+        return new String[] { otp, token, otpResponse[2], otpResponse[3] };
     }
 
     @Transactional(noRollbackFor = AuthException.class)
@@ -1472,13 +1466,13 @@ public class AuthService {
         userToSave.setMobileVerified(true);
         userToSave.setEmailVerified(true);
 
-        // Assign 'Pending' approval status by default for new users
-        userToSave.setApprovalStatus("PENDING");
+        // Assign 'APPROVED' approval status by default for new users
+        userToSave.setApprovalStatus("APPROVED");
         userToSave.setRegistrationStatus("PROFILE_CREATED");
 
-        // Initialize UserStatus to 'NEW' for new users awaiting approval
+        // Initialize UserStatus to 'ACTIVE' for new users since admin approval is no longer required
         if (userToSave.getUserStatus() == null) {
-            userStatusRepository.findById("NEW").ifPresent(userToSave::setUserStatus);
+            userStatusRepository.findById("ACTIVE").ifPresent(userToSave::setUserStatus);
         }
 
         User savedUser = userRepository.save(userToSave);
@@ -1486,42 +1480,16 @@ public class AuthService {
         // Update progress tracking
         updateRegistrationProgress(savedUser.getUserId(), "PROFILE_CREATED");
 
-        // 4. Register the current device as the first 'Trusted' device for this user
+        // Ensure the device id is present
         String finalDeviceId = request.getDeviceId() != null ? request.getDeviceId().trim() : null;
         if (finalDeviceId == null || finalDeviceId.isEmpty()) {
             throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
                     "Device ID is required to complete profile.");
         }
 
-        UserDevice device = deviceService.registerOrUpdateDevice(savedUser,
-                finalDeviceId,
-                request.getSimSerial(),
-                request.getPushToken(),
-                request.getDeviceName(),
-                request.getDeviceModel(),
-                request.getOsName(),
-                request.getOsVersion(),
-                request.getAppVersion(),
-                request.getLatitude(),
-                request.getLongitude(),
-                request.getCountry(),
-                request.getCity(),
-                true); // IMP: Always trusted on first registration
-
-        // 5. SECURITY FIX: Do NOT issue final security tokens until Admin Approval is
-        // granted.
-        // Returning null tokens signals the Flutter app to stay on a 'Wait for
-        // Approval' screen.
-        String accessToken = null;
-        String refreshToken = null;
-
-        // 6. Audit logs
-        saveLoginHistory(savedUser, device, ipAddress, userAgent, false, "PENDING_APPROVAL", request.getLatitude(),
-                request.getLongitude(), request.getCity(), request.getCountry());
-
         String txId = "TX" + System.currentTimeMillis();
         MDC.put("txId", txId);
-        flowLogger.info("event=USER_REGISTER name={} userId={} status=PENDING_APPROVAL", savedUser.getName(),
+        flowLogger.info("event=USER_REGISTER name={} userId={} status=APPROVED", savedUser.getName(),
                 savedUser.getUserId());
         MDC.clear();
 
@@ -1533,8 +1501,11 @@ public class AuthService {
             logger.warn("Failed to cleanup incomplete registration for {}: {}", mobileNumber, e.getMessage());
         }
 
-        return new TokenResponse(accessToken, refreshToken,
-                "Your profile created successfully. Admin approval required. Please wait for sometimes then login again.");
+        // Return tokens directly for immediate login!
+        return completeLoginAndIssueTokens(savedUser, finalDeviceId, request.getSimSerial(), request.getPushToken(),
+                request.getDeviceName(), request.getDeviceModel(), request.getOsName(), request.getOsVersion(),
+                request.getAppVersion(), request.getLatitude(), request.getLongitude(), request.getCountry(),
+                request.getCity(), ipAddress, userAgent, true);
     }
 
     /**
@@ -1566,10 +1537,10 @@ public class AuthService {
                     "You are already registered. Please go back to the login screen and sign in.");
         }
 
-        // 3. Email Mismatch Check: Ensure the email provided matches what was verified
-        // in the previous step
+        // 3. Email Mismatch Check: If an email is already bound in the token, verify it.
+        // If the token email is null, skip strict check (this is the first time we bind it).
         String tokenEmail = (String) claims.get("email");
-        if (tokenEmail == null || !tokenEmail.equalsIgnoreCase(email.trim())) {
+        if (tokenEmail != null && !tokenEmail.equalsIgnoreCase(email.trim())) {
             throw new AuthException(HttpStatus.BAD_REQUEST,
                     "Email mismatch: The provided email does not match the token's registered email.");
         }
@@ -1584,10 +1555,10 @@ public class AuthService {
                 .orElseThrow(() -> new AuthException(
                         HttpStatus.BAD_REQUEST, "OTP_NOT_FOUND: No active OTP record."));
 
-        // 5. Continuity check
-        if (sessionTokenId == null || !sessionTokenId.equals(emailOtp.getSessionId())) {
-            throw new AuthException(HttpStatus.UNAUTHORIZED,
-                    "INVALID_OTP_SESSION: The session token does not match the current OTP attempt.");
+        // 5. Continuity check: Softened for email verification to allow resends/state-drift
+        if (sessionTokenId != null && !sessionTokenId.equals(emailOtp.getSessionId())) {
+            logger.warn("Session ID mismatch in token ({} vs {}). Proceeding with latest DB record for {}.", 
+                sessionTokenId, emailOtp.getSessionId(), formattedEmail);
         }
 
         // 6. Verify visual code
@@ -1705,7 +1676,7 @@ public class AuthService {
             history.setUserAgent(userAgent);
             history.setSuccess(success);
             history.setFailureReason(failureReason);
-            history.setCreatedTimestamp(LocalDateTime.now());
+            history.setCreatedTimestamp(LocalDateTime.now(java.time.ZoneOffset.UTC));
 
             // 2. Capture device metadata if available
             if (device != null) {
@@ -1773,7 +1744,7 @@ public class AuthService {
      * Returns [otpCode, sessionId]
      */
     private String[] generateOtpWithLockout(String target, OtpType otpType, Optional<User> userOpt) {
-        return generateOtpWithLockout(target, otpType, userOpt, false);
+        return generateOtpWithLockout(target, otpType, userOpt, false, false);
     }
 
     /**
@@ -1789,34 +1760,29 @@ public class AuthService {
      */
     @Transactional(noRollbackFor = AuthException.class)
     protected String[] generateOtpWithLockout(String target, OtpType otpType, Optional<User> userOpt,
-            boolean isResend) {
+            boolean isResend, boolean skipGeneration) {
 
-        // Enforcement: Check if backend mobile OTP generation is enabled (for
-        // testing/Postman)
-        // This only applies to MOBILE_LOGIN. EMAIL_VERIFICATION and others remain
-        // enabled.
+        // 1. 🔥 NEW: Auto-detect skipSms mode based on Global Backend Settings & OtpType
+        // This ensures 'Resend' flows work even if the Flutter app forgets to pass 'skipSms: true'.
+        boolean effectiveSkipGeneration = skipGeneration;
         if (otpType == live.chronogram.auth.enums.OtpType.MOBILE_LOGIN) {
-            // Hard Block: Only allow if explicitly enabled in properties (Legacy/Postman
-            // testing only)
-            if (!backendMobileOtpEnabled) {
-                throw new AuthException(HttpStatus.FORBIDDEN,
-                        "BACKEND_OTP_DISABLED: Mobile SMS is managed by Firebase. Pass 'skipSms: true' from the app.");
+            if (backendMobileOtpEnabled) {
+                effectiveSkipGeneration = false; // Forced Testing Mode (Postman/Local)
+            } else {
+                effectiveSkipGeneration = true;  // Production Mode (Firebase is mandatory)
             }
+        } else {
+            // For Email, New Device, etc., we ALWAYS generate a real backend OTP.
+            effectiveSkipGeneration = false;
         }
 
         try {
-            return otpService.generateOtp(target, otpType, isResend);
+            return otpService.generateOtp(target, otpType, isResend, effectiveSkipGeneration);
         } catch (AuthException e) {
-            if (e.getStatus() == HttpStatus.TOO_MANY_REQUESTS && userOpt.isPresent()) {
-                User userToBlock = userOpt.get();
-                Optional<live.chronogram.auth.model.UserStatus> blockedStatus = userStatusRepository.findById("BLOCK");
-                blockedStatus.ifPresent(status -> {
-                    userToBlock.setUserStatus(status);
-                    userToBlock.setStatusReason("Exceeded maximum OTP attempts or resends.");
-                    userToBlock.setLockedUntil(LocalDateTime.now().plusMinutes(15));
-                    userRepository.save(userToBlock);
-                });
-            }
+            // We NO LONGER lock the User table for TOO_MANY_REQUESTS during OTP generation.
+            // This ensures that if the user is already logged in on a different device,
+            // their active session is NOT removed or blocked. The lock exists ONLY at
+            // the OtpService/OtpVerification level for the target.
             throw e;
         }
     }
@@ -2129,7 +2095,7 @@ public class AuthService {
     @Scheduled(cron = "0 0 2 * * *") // Runs every night at 2 AM
     @Transactional
     public void cleanupAbandonedRegistrations() {
-        LocalDateTime cutoff = LocalDateTime.now().minusDays(2);
+        LocalDateTime cutoff = LocalDateTime.now(java.time.ZoneOffset.UTC).minusDays(2);
 
         // Find users who haven't completed registration and are older than 2 days
         List<User> abandonedUsers = userRepository.findAll().stream()

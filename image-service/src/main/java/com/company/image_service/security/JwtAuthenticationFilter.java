@@ -19,6 +19,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         this.authServiceUrl = authServiceUrl;
     }
 
+    private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(JwtAuthenticationFilter.class);
+
     @Override
     protected void doFilterInternal(
             HttpServletRequest request,
@@ -114,6 +116,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
 
         try {
+            logger.info("[HANDSHAKE] Requesting session validation from Auth Service...");
             java.net.URL url = new java.net.URL(authServiceUrl + "/api/auth/validate-session");
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
@@ -123,14 +126,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
             int code = conn.getResponseCode();
             if (code == 200) {
+                logger.info("[HANDSHAKE] Session validated successfully.");
                 VALID_SESSION_CACHE.put(token, now);
                 return true;
             }
+            logger.warn("[HANDSHAKE] Session validation failed. Service responded with: {}", code);
             return false;
         } catch (Exception e) {
-            // If authapp is down, fail-safe or fail-fast?
-            // To be secure, we should fail-fast (return false)
-            System.err.println("Session validation failed (Auth service unreachable): " + e.getMessage());
+            logger.error("[HANDSHAKE-ERROR] Auth Service unreachable: {}", e.getMessage());
             return false;
         }
     }

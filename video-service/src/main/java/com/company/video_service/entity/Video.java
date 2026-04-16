@@ -34,7 +34,7 @@ public class Video {
     private String mimeType;
 
     @Column(name = "duration_seconds")
-    private Integer durationSeconds;
+    private Long durationSeconds;
 
     @Column(name = "video_width")
     private Integer videoWidth;
@@ -159,11 +159,11 @@ public class Video {
         this.mimeType = mimeType;
     }
 
-    public Integer getDurationSeconds() {
+    public Long getDurationSeconds() {
         return durationSeconds;
     }
 
-    public void setDurationSeconds(Integer durationSeconds) {
+    public void setDurationSeconds(Long durationSeconds) {
         this.durationSeconds = durationSeconds;
     }
 

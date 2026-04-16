@@ -33,7 +33,16 @@ public class ProfileService {
                     "Account deleted.");
         }
 
-        return new ProfileDto(user.getName(), user.getEmail());
+        return new ProfileDto(user.getName(), user.getEmail(), user.getPublicKey());
+    }
+
+    /**
+     * Retrieves ONLY the public key for a user (used by other services like chat).
+     */
+    public String getPublicKey(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        return user.getPublicKey();
     }
 
     /**
@@ -53,9 +62,12 @@ public class ProfileService {
         }
 
         user.setName(request.getName());
+        if (request.getPublicKey() != null) {
+            user.setPublicKey(request.getPublicKey());
+        }
         userRepository.save(user);
 
-        return new ProfileDto(user.getName(), user.getEmail());
+        return new ProfileDto(user.getName(), user.getEmail(), user.getPublicKey());
     }
 
 

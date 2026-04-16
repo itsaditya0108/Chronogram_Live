@@ -1,7 +1,7 @@
 # 🧪 Chronogram Auth Service — API Testing Guide
 
-**Base URL:** `http://localhost:8086/api`  
-**Version:** 2.1 (Updated March 2026)  
+**Base URL:** `http://localhost:8081/api` (Testing) / `http://localhost:8086/api` (Gateway)  
+**Version:** 3.0 (April 2026)  
 **Security:** Stateless JWT + Session Binding  
 
 ---
@@ -12,9 +12,9 @@
 |---|---|---|---|
 | 1 | [Register: Send Mobile OTP](#1-register--send-mobile-otp) | POST | skipSms for Firebase |
 | 2 | [Register: Verify Mobile OTP](#2-register--verify-mobile-otp) | POST | SIM Serial Required |
-| 3 | [Register: Send Email OTP](#3-register--send-email-otp) | POST | 5-min Expiration |
+| 3 | [Register: Send Email OTP](#3-register--send-email-otp) | POST | Progressive Limits |
 | 4 | [Register: Verify Email OTP](#4-register--verify-email-otp) | POST | Stateless Token |
-| 5 | [Register: Complete Profile](#5-register--complete-profile) | POST | Admin Approval State |
+| 5 | [Register: Complete Profile](#5-register--complete-profile) | POST | Instant Login (No Approval) |
 | 6 | [Login: Send OTP](#6-login--send-otp) | POST | Upfront Blocked Check |
 | 7 | [Login: Verify OTP](#7-login--verify-otp) | POST | Trusted Device Check |
 | 8 | [New Device: Verify](#8-new-device--verify) | POST | 401 Approval Required |
@@ -22,47 +22,48 @@
 | 10 | [Resend: Register OTP](#10-resend-register-otp) | POST | Multi-Target Support |
 | 11 | [Resend: Login OTP](#11-resend-login-otp) | POST | - |
 | 12 | [Link Email: Send OTP](#12-link-email--send-otp) | POST | Protected Auth |
-| 13 | [Refresh Token](#14-refresh-token) | POST | SHA-256 Hashing |
-| 14 | [Validate Session](#15-validate-session) | GET | Microservice Health |
-| 15 | [Get Profile (me)](#16-get-my-profile) | GET | Masked Privacy |
-| 16 | [Logout](#17-logout) | POST | Token Revocation |
-| 17 | [Storage: Get Usage](#19-storage-api) | GET | - |
-| 18 | [Settings: Sync Pref](#20-settings-api) | GET / PUT | - |
-| 19 | [Account: Delete](#21-delete-account) | DELETE | App Store Compliant |
-| 20 | [Firebase Login/Register](#22-firebase-auth) | POST | Global Identifier |
+| 13 | [Link Email: Verify](#13-link-email--verify) | POST | Immutable Record | 
+| 14 | [Refresh Token](#14-refresh-token) | POST | SHA-256 Hashing |
+| 15 | [Validate Session](#15-validate-session) | GET | Microservice Health |
+| 16 | [Get Profile (me)](#16-get-my-profile) | GET | Masked Privacy |
+| 17 | [Logout](#17-logout) | POST | Token Revocation |
+| 18 | [Profile Management](#18-profile-management) | GET/PUT | - |
+| 19 | [Storage API](#19-storage-api) | GET | - |
+| 20 | [Settings API](#20-settings-api) | GET/PUT | - |
+| 21 | [Delete Account](#21-delete-account) | DELETE | App Store Compliant |
+| 22 | [Firebase Auth](#22-firebase-auth) | POST | Global Identifier |
 
 ---
 
 ## 🛡️ Global Security Notes
 
 - **Auth Header:** `Authorization: Bearer <ACCESS_TOKEN>` (required for all protected endpoints)
-- **OTP Expiration:** ALL OTPs are valid for **5 minutes** precisely.
-- **OTP Lockout Policy:** 
-  - 5 wrong codes OR 5 resends → **15-minute account lockout**.
-  - Lockout reason is returned in the `message` field with status `429`.
+- **Progressive OTP Expiration & Lockout Policy:** 
+  - **1st Request:** Valid for 2 minutes.
+  - **2nd Request:** Valid for 3 minutes.
+  - **3rd Request:** Valid for 5 minutes.
+  - **4th Request onwards:** **BLOCKED** for 120 minutes (2-hour lock).
+- **Attempt Tracking:** Hitting "Send OTP" again (even if you navigate back/forth) will increment your resend count and increase the timer length. It will NO LONGER throw a "Please wait" error.
+- **Firebase Mode:** If `skipSms: true` is sent, the backend tracks the cooldown but does NOT generate a real SMS code.
 - **Traceability:** Every response includes `X-Correlation-ID`. Log this for debugging.
-- **Deleted Accounts → `410 Gone`:** `"This account has been deleted."`
-- **Blocked Accounts → `403 Forbidden`:** `"Account is blocked. Reason: ..."`
-- **Deleted Accounts → `410 Gone`:** `"Account deleted."`
 - **Payload Limits:** JSON: 100KB · Photo: 5MB · Multipart: 15MB
 
 ---
 
-## 🔗 Token Chain
+## 🔗 Token Chain Flow
 
 ```mermaid
 graph TD
-    A[send-otp] -->|otpSessionToken 5m| B[verify-otp / verify-login-otp]
+    A[send-otp] -->|otpSessionToken| B[verify-otp / verify-login-otp]
     B -->|401 approval_required| C[verify-new-device]
     B -->|200 Success - Registration| D[registrationToken 15m]
     D --> E[send-email-otp]
     E -->|registrationToken| F[verify-email]
     F -->|registrationToken| G[complete-profile]
-    G -->|200 Success| H[Admin Approval Pending]
-    B -->|200 Success - Login| I[accessToken + refreshToken]
+    G -->|200 Success| I[accessToken + refreshToken]
+    B -->|200 Success - Login| I
     C -->|200 Success| I
 ```
-
 
 ---
 
@@ -94,11 +95,13 @@ graph TD
 ```json
 {
   "message": "OTP sent successfully.",
-  "otpSessionToken": "eyJhbGci..."
+  "otpSessionToken": "eyJhbGci...",
+  "expiresInMinutes": 2,
+  "attemptsRemaining": 2
 }
 ```
 
-> ℹ️ Backend does NOT echo OTPs for security. Developers should check the `otp_verification` table for the code during testing.
+> ℹ️ Backend does NOT echo OTPs for security. Developers should check the `otp_verification` MySQL table for the code during testing.
 
 **Errors:**
 | Status | Message |
@@ -106,8 +109,8 @@ graph TD
 | `400` | `"Invalid mobile number format. Must be 10 digits."` |
 | `400` | `"Device ID is required"` |
 | `409` | `"You are already registered. Please login."` |
-| `429` | `"Account is temporarily locked. Try again after 15 minute(s)."` |
-| `410` | `"This account has been deleted. Please contact support."` |
+| `429` | `"You have reached the maximum number of OTP requests. Please try again after 2 hours for security."` |
+| `429` | `"Too many requests. For your security, this phone number or email is temporarily locked for X minutes."` |
 
 
 ---
@@ -127,13 +130,7 @@ graph TD
   "pushToken": "FCM_TOKEN",
   "deviceName": "Pixel 8",
   "deviceModel": "Pixel 8",
-  "osName": "Android",
-  "osVersion": "14",
-  "appVersion": "1.0.0",
-  "latitude": 28.6139,
-  "longitude": 77.2090,
-  "city": "New Delhi",
-  "country": "India"
+  "osName": "Android"
 }
 ```
 
@@ -154,8 +151,6 @@ graph TD
 | `400` | `"OTP not found or expired. Please request a new one."` |
 | `400` | `"SIM_REQUIRED: Registration requires a valid SIM card."` |
 | `401` | `"Invalid session: The session token has expired or been replaced."` |
-| `403` | `"OTP session mismatch: This token belongs to a different mobile number."` |
-| `429` | `"Your account is temporarily locked. Please try again after 15 minute(s)."` |
 
 
 ---
@@ -176,20 +171,13 @@ graph TD
 ```json
 {
   "message": "Email OTP sent successfully.",
-  "accessToken": "eyJhbGci..."
+  "accessToken": "eyJhbGci...",
+  "expiresInMinutes": 2,
+  "attemptsRemaining": 2
 }
 ```
 
-> ⚠️ The `accessToken` returned here is the updated **registrationToken** (valid for 15 mins). The Email OTP is valid for **5 mins**.
-
-**Errors:**
-| Status | Message |
-|---|---|
-| `400` | `"Email is required for registration."` |
-| `400` | `"Invalid email format."` |
-| `400` | `"Email already in use. Please use a different email."` |
-| `401` | `"Invalid registration token."` |
-| `403` | `"Invalid registration step. Cannot send email OTP."` |
+> ⚠️ The `accessToken` returned here is the updated **registrationToken** (valid for 15 mins).
 
 
 ---
@@ -215,14 +203,6 @@ graph TD
 }
 ```
 
-**Errors:**
-| Status | Message |
-|---|---|
-| `400` | `"Invalid OTP"` |
-| `400` | `"OTP expired."` |
-| `400` | `"OTP must be exactly 6 digits."` |
-| `401` | `"Invalid registration token."` |
-
 ---
 
 ## 5. Register – Complete Profile
@@ -244,23 +224,17 @@ graph TD
 }
 ```
 
-**Response `200 OK` (NEW):**
+**Response `200 OK`:**
 ```json
 {
-  "accessToken": null,
-  "refreshToken": null,
-  "message": "your profile created wait for admin approval"
+  "accessToken": "eyJhbG...",
+  "refreshToken": "eyJhbG...",
+  "role": "USER",
+  "message": "Login successful."
 }
 ```
 
-> 🛡️ **Security Note:** In the latest version, `complete-profile` does NOT issue security tokens. Users must remain on a "Waiting for Approval" screen.
-
-**Errors:**
-| Status | Message |
-|---|---|
-| `400` | `"Validation Error: Name must contain only alphabetic characters and spaces."` |
-| `400` | `"Validation Error: Age Restriction: Users must be 12 years or older to register."` |
-| `401` | `"Invalid registration token."` |
+> 🚀 **Security Note:** Manual Admin approval is bypassed! Completion seamlessly logs the user in and delegates an immediate `accessToken` & `refreshToken`!
 
 
 ---
@@ -276,7 +250,6 @@ graph TD
   "deviceId": "DEVICE_UUID_123",
   "deviceName": "Pixel 8",
   "osName": "Android",
-  "appVersion": "1.0.0",
   "skipSms": true
 }
 ```
@@ -285,20 +258,11 @@ graph TD
 ```json
 {
   "message": "OTP sent successfully.",
-  "otpSessionToken": "eyJhbGci..."
+  "otpSessionToken": "eyJhbGci...",
+  "expiresInMinutes": 2,
+  "attemptsRemaining": 2
 }
 ```
-
-**Errors:**
-| Status | Message |
-|---|---|
-| `400` | `"Invalid mobile number format. Must be 10 digits."` |
-| `400` | `"Device ID is required"` |
-| `401` | `"Registration incomplete. Please use the registration screen."` |
-| `403` | `"Admin approval required. Please wait for sometimes..."` |
-| `404` | `"User not found. Please register."` |
-| `410` | `"This account has been deleted."` |
-| `429` | `"Account is temporarily locked. Try again after 15 minute(s)."` |
 
 
 ---
@@ -313,17 +277,7 @@ graph TD
   "mobileNumber": "9876543210",
   "otpCode": "654321",
   "otpSessionToken": "eyJhbGci...",
-  "deviceId": "DEVICE_UUID_123",
-  "pushToken": "FCM_TOKEN",
-  "deviceName": "Pixel 8",
-  "deviceModel": "Pixel 8",
-  "osName": "Android",
-  "osVersion": "14",
-  "appVersion": "1.0.0",
-  "latitude": 28.6139,
-  "longitude": 77.2090,
-  "city": "New Delhi",
-  "country": "India"
+  "deviceId": "DEVICE_UUID_123"
 }
 ```
 
@@ -332,6 +286,7 @@ graph TD
 {
   "accessToken": "eyJhbGci...",
   "refreshToken": "eyJhbGci...",
+  "role": "USER",
   "message": "Login successful."
 }
 ```
@@ -346,16 +301,7 @@ graph TD
 }
 ```
 
-> ➡️ On `APPROVAL_REQUIRED`: Navigate user to **New Device Verify** screen. Pass the `temporaryToken` in subsequent requests.
-
-**Errors:**
-| Status | Message |
-|---|---|
-| `400` | `"Invalid Mobile OTP"` |
-| `400` | `"OTP not found or expired. Please request a new one."` |
-| `401` | `"Invalid session: The session token has expired or been replaced."` |
-| `403` | `"Cross-device OTP verification attempt detected and blocked."` |
-| `429` | `"Account locked. Please try again after 15 minute(s)."` |
+> ➡️ On `APPROVAL_REQUIRED`: Navigate user to **New Device Verify** screen.
 
 
 ---
@@ -374,24 +320,15 @@ graph TD
 }
 ```
 
-> ℹ️ `temporaryToken` is **required** for session continuity. `mobileNumber` is used as a fallback but the token's identity takes precedence.
-
 **Response `200 OK`:**
 ```json
 {
   "accessToken": "eyJhbGci...",
   "refreshToken": "eyJhbGci...",
-  "message": "New device verified and logged in."
+  "role": "USER",
+  "message": "Login successful."
 }
 ```
-
-**Errors:**
-| Status | Message |
-|---|---|
-| `400` | `"Invalid OTP"` |
-| `400` | `"OTP not found or expired. Please request a new one."` |
-| `401` | `"INVALID_OTP_SESSION: The temporary token does not match the current OTP attempt."` |
-| `410` | `"This account has been deleted."` |
 
 
 ---
@@ -411,18 +348,11 @@ graph TD
 ```json
 {
   "message": "New Device OTP resent successfully to registered email.",
-  "temporaryToken": "eyJhbGci..."
+  "temporaryToken": "eyJhbGci...",
+  "expiresInMinutes": 5,
+  "attemptsRemaining": 0
 }
 ```
-
-> ⚠️ Replace the old `temporaryToken` with the new one returned here.
-
-**Errors:**
-| Status | Message |
-|---|---|
-| `400` | `"Temporary token is required for resend."` |
-| `401` | `"Invalid temporary token for new device verification."` |
-| `429` | `"Account locked. Please try again after 15 minute(s)."` |
 
 
 ---
@@ -430,23 +360,6 @@ graph TD
 ## 10. Resend Register OTP
 
 **`POST /api/auth/register/resend-otp`**
-
-### For Mobile OTP:
-```json
-{
-  "mobileNumber": "9876543210",
-  "deviceId": "DEVICE_UUID_123"
-}
-```
-
-**Response `200 OK`:**
-```json
-{
-  "message": "Mobile OTP resent successfully.",
-  "otpSessionToken": "eyJhbGci..."
-}
-```
-
 
 ### For Email OTP:
 ```json
@@ -460,10 +373,29 @@ graph TD
 ```json
 {
   "message": "Email OTP resent successfully.",
-  "accessToken": "eyJhbGci..."
+  "accessToken": "eyJhbGci...",
+  "expiresInMinutes": 5,
+  "attemptsRemaining": 0
 }
 ```
 
+### For Mobile OTP:
+```json
+{
+  "mobileNumber": "9876543210",
+  "deviceId": "DEVICE_UUID_123"
+}
+```
+
+**Response `200 OK`:**
+```json
+{
+  "message": "Mobile OTP resent successfully.",
+  "otpSessionToken": "eyJhbGci...",
+  "expiresInMinutes": 5,
+  "attemptsRemaining": 0
+}
+```
 
 ---
 
@@ -483,7 +415,9 @@ graph TD
 ```json
 {
   "message": "Mobile OTP resent successfully.",
-  "otpSessionToken": "eyJhbGci..."
+  "otpSessionToken": "eyJhbGci...",
+  "expiresInMinutes": 5,
+  "attemptsRemaining": 0
 }
 ```
 
@@ -494,8 +428,6 @@ graph TD
 
 **`POST /api/auth/link-email`**  
 **Header:** `Authorization: Bearer <ACCESS_TOKEN>`
-
-For users who only registered with mobile and want to add an email.
 
 **Request:**
 ```json
@@ -509,10 +441,11 @@ For users who only registered with mobile and want to add an email.
 ```json
 {
   "message": "OTP sent to email.",
-  "registrationToken": "eyJhbGci..."
+  "registrationToken": "eyJhbGci...",
+  "expiresInMinutes": 2,
+  "attemptsRemaining": 2
 }
 ```
-
 
 ---
 
@@ -736,14 +669,6 @@ This endpoint is used for **direct login/registration** using a Firebase ID Toke
 }
 ```
 
-**Response `403 Forbidden` (Unapproved User):**
-```json
-{
-  "status": 403,
-  "message": "Admin approval required. Please wait for sometimes..."
-}
-```
-
 > ⚠️ For new users, the `accessToken` returned is a **registrationToken** (Step: `EMAIL_REQUIRED`). You must call **Step 3 (Send Email OTP)** using this token.
 
 **Errors:**
@@ -756,77 +681,109 @@ This endpoint is used for **direct login/registration** using a Firebase ID Toke
 
 ---
 
-## 🔥 Firebase Phone Auth Flow (Recommended)
+## 🚀 Flutter: Step-by-Step Firebase Implementation
 
-1.  **Check User Status:** Call `/api/auth/login/send-otp` (for login) or `/api/auth/register/send-otp` (for registration) with **`skipSms: true`**.
-    *   This validates if the user exists and returns the correct status code (`200 OK`, `404 Not Found`, or `409 Conflict`).
-2.  **Verify via Firebase:** On the client side, use Firebase SDK to send and verify the SMS OTP.
-3.  **Get ID Token:** Upon successful verification, get the `idToken` from Firebase.
-4.  **Backend Auth:** Call `/api/auth/firebase-login` with the token and device details.
-5.  **Email Verification:** For new users, call **Step 3 (Send Email OTP)** and **Step 4 (Verify Email OTP)**.
-6.  **Complete Profile:** Finally, call **Step 5 (Complete Profile)** to finish registration.
+Follow this sequence to implement Mobile Auth correctly using Firebase on the client side:
 
----
+### 1. Request Session from Backend
+Before calling Firebase, always call the Backend to check user status and start the security session.
+- **Endpoint**: `POST /api/auth/register/send-otp` (or `/login/send-otp`)
+- **Key Field**: `"skipSms": true`
+- **Why?**: This prevents the Backend from sending a second SMS and returns the `otpSessionToken` needed for the next steps. It also enforces the 2-3-5 cooldown.
 
-## 🔐 Admin Approval Flow
+### 2. Trigger Firebase SMS (Flutter SDK)
+Use the standard Firebase SDK logic:
+```dart
+await FirebaseAuth.instance.verifyPhoneNumber(
+  phoneNumber: '+919876543210',
+  verificationCompleted: (PhoneAuthCredential credential) async {
+    // Auto-verification handling
+  },
+  codeSent: (String verificationId, int? resendToken) {
+    // Store verificationId for manual entry
+  },
+  // ... rest of Firebase logic
+);
+```
 
-After **Step 5 (Complete Profile)**, the user's account is created in `PENDING` approval state with status `NEW`. **Security tokens are NOT issued at this stage.**
+### 3. Verify OTP & Get ID Token
+Once the user enters the digits in your app:
+1. Create a credential: `PhoneAuthProvider.credential(verificationId: vid, smsCode: code)`
+2. Sign in: `UserCredential user = await FirebaseAuth.instance.signInWithCredential(credential);`
+3. **CRITICAL**: Get the ID Token: `String? idToken = await user.user?.getIdToken();`
 
-| State | Behavior |
-|---|---|
-| `PENDING` | Access blocked. Must wait for admin approval. |
-| `APPROVED` | Full access granted. User can now log in. |
-| `REJECTED` | Account access denied. |
+### 4. Finalize with Backend
+Now send the Firebase token to the Chronogram Backend to get your final Session Tokens.
+- **Endpoint**: `POST /api/auth/firebase-login`
+- **Body**:
+  ```json
+  {
+    "firebaseIdToken": "<THE_ID_TOKEN_FROM_STEP_3>",
+    "otpSessionToken": "<THE_TOKEN_FROM_STEP_1>",
+    "deviceId": "...",
+    "deviceName": "..."
+  }
+  ```
 
-> ℹ️ Status Lifecycle: `null` → `NEW` (on registration) → `ACTIVE` (on first successful login after admin approval). 
-
----
-
-## 📌 User Status Reference (Admin)
-
-| Code | Name | Description |
-|---|---|---|
-| `NEW` | New | Just completed registration |
-| `ACTIVE` | Active | Normal, approved user |
-| `BLOCK` | Blocked | Blocked by admin |
-| `SUSPEND` | Suspended | Temporarily suspended |
-| `DELETE` | Deleted | Soft deleted |
-
----
-
-## 🔁 Recommended Flutter Implementation Checklist
-
-- [ ] Store `accessToken` + `refreshToken` in `flutter_secure_storage`.
-- [ ] Add global `401` interceptor → call `refresh-token` → retry original request once.
-- [ ] Watch for `APPROVAL_REQUIRED` (401) during login → Navigate to New Device screen.
-- [ ] Show "Waiting for Approval" screen if `403 Forbidden` is received during login (Admin Pending).
-- [ ] Send `deviceId` (stable UUID) on ALL OTP and Auth endpoints.
-- [ ] Send `simSerial` (Physical SIM ID) on `verify-otp` (Registration).
-- [ ] Send `pushToken` (FCM) during `verify-login-otp` for security alerts.
-- [ ] Use **`skipSms: true`** on Send OTP endpoints when using Firebase to avoid double SMS.
-- [ ] Set **5-minute timers** on UI for OTP expiration.
-- [ ] Handle `410 Gone` globally → Logout user with "Account deleted" alert.
-- [ ] Handle `429 Too Many Requests` → Show lockout timer based on 15-minute policy.
-
+### 5. Handle the Result
+- **Existing User (Login)**: You receive `accessToken` + `refreshToken`. App is ready!
+- **New User (Registration)**: You receive an `accessToken` (This is actually a **RegistrationToken**). 
+    - The backend requires Email next. 
+    - **Next Step**: Call `POST /api/auth/send-email-otp` using the token you just received.
 
 ---
 
-## 🔐 PHASE 6: Admin Panel APIs
-*(Requires `ROLE_ADMIN`. These are NOT for the mobile APK.)*
-
-### 1. User Management
-*   **List All:** `GET /api/admin/users`
-*   **Pending Approval:** `GET /api/admin/users/pending`
-*   **Approve:** `POST /api/admin/users/{userId}/approve?adminId=1`
-*   **Reject:** `POST /api/admin/users/{userId}/reject`
-*   **Block/Unblock:** `POST /api/admin/users/{userId}/block` | `unblock`
-*   **Soft Delete:** `DELETE /api/admin/users/{userId}`
-
-### 2. System Monitoring
-*   **Global Storage Usage:** `GET /api/admin/users/storage` (Returns breakdown for all users)
-*   **Device Inventory:** `GET /api/admin/users/devices`
-*   **Sync Status:** `GET /api/admin/users/sync`
-*   **Incomplete Reg:** `GET /api/admin/users/incomplete` (Users who dropped off)
-
 ---
-**Happy Testing!** 🚀
+
+## 👑 Web Admin Panel APIs (Dashboard)
+
+The Admin API endpoints are completely separated from the generic Flutter/APK users app flow. They use stateless JWTs and are designed specifically for Web/Postman integration.
+
+### 1. Admin Login
+**`POST /api/auth/admin/login`**
+
+**Request:**
+```json
+{
+  "username": "admin",
+  "password": "password123"
+}
+```
+
+**Response `200 OK`:**
+```json
+{
+  "accessToken": "eyJhbGci...",
+  "refreshToken": "eyJhbGci...",
+  "role": "ADMIN",
+  "message": "Login successful"
+}
+```
+> **Note:** Admins use stateless JWTs, meaning there are no concurrent device limitations. 
+
+### 2. Admin Register (Local Setup)
+**`POST /api/auth/admin/register?username=admin&email=admin@test.com&password=password123&role=SUPER_ADMIN`**
+
+> **Note:** Use this endpoint locally via Postman when setting up your new local database since the `chronogram_auth` DB will start empty!
+
+### 3. Fetch All Users
+**`GET /api/admin/users`**  
+**Header:** `Authorization: Bearer <ADMIN_ACCESS_TOKEN>`
+
+### 4. Fetch All Devices
+**`GET /api/admin/users/devices`**  
+**Header:** `Authorization: Bearer <ADMIN_ACCESS_TOKEN>`
+
+### 5. Fetch Storage Stats
+**`GET /api/admin/users/storage/stats`**  
+**Header:** `Authorization: Bearer <ADMIN_ACCESS_TOKEN>`
+
+### 6. Synchronize Storage Data
+**`POST /api/admin/users/storage/sync`**  
+**Header:** `Authorization: Bearer <ADMIN_ACCESS_TOKEN>`
+> **Note:** Call this endpoint to manually trigger a fetch array from Image-Service and Video-Service to re-calculate all Storage usages actively.
+
+### 7. Actions (Block/Unblock/Delete)
+- **Block User:** `POST /api/admin/users/{userId}/block`
+- **Unblock User:** `POST /api/admin/users/{userId}/unblock`
+- **Soft Delete User:** `DELETE /api/admin/users/{userId}`

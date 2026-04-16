@@ -24,14 +24,27 @@ public interface OtpVerificationRepository extends JpaRepository<OtpVerification
     Optional<OtpVerification> findTopByTargetAndOtpTypeOrderByCreatedTimestampDesc(String target, OtpType otpType);
 
     /**
+     * Retrieves the latest OTP generated for a target, REGARDLESS of type.
+     * Used for Global Strike counting to stop cross-screen spammers.
+     */
+    Optional<OtpVerification> findTopByTargetOrderByCreatedTimestampDesc(String target);
+
+    /**
      * Retrieves the latest OTP generated for a target and type WITHOUT locking.
      * Used for non-destructive session verification.
      */
     Optional<OtpVerification> findFirstByTargetAndOtpTypeOrderByCreatedTimestampDesc(String target, OtpType otpType);
 
     /**
+     * Checks if there is any active lockout for the given target, regardless of OTP type.
+     */
+    Optional<OtpVerification> findTopByTargetAndLockedUntilAfterOrderByLockedUntilDesc(String target, java.time.LocalDateTime now);
+
+    /**
      * Deletes all previous OTP records for a target and type to ensure only one is
      * active.
      */
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.transaction.annotation.Transactional
     void deleteByTargetAndOtpType(String target, OtpType otpType);
 }

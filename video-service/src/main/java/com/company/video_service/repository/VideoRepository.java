@@ -26,6 +26,8 @@ public interface VideoRepository extends JpaRepository<Video, Long> {
 
   boolean existsByUserIdAndEncryptedFileHashAndIsDeletedFalse(Long userId, String encryptedFileHash);
 
+  java.util.List<Video> findByUserIdAndEncryptedFileHashAndIsDeletedFalse(Long userId, String encryptedFileHash);
+
   long countByUserIdAndCreatedTimestampAfter(Long userId, java.time.LocalDateTime timestamp);
 
   // Retrieve all active (non-deleted) videos for a user, ordered by newest first
@@ -35,7 +37,7 @@ public interface VideoRepository extends JpaRepository<Video, Long> {
           SELECT COUNT(v), COALESCE(SUM(v.originalFileSize), 0)
           FROM Video v
           WHERE v.isDeleted = false
-            AND v.status <> com.company.video_service.entity.VideoStatus.DELETED
+            AND (v.status IS NULL OR v.status <> com.company.video_service.entity.VideoStatus.DELETED)
       """)
   Object getStorageSummary();
 
@@ -44,7 +46,7 @@ public interface VideoRepository extends JpaRepository<Video, Long> {
           FROM Video v
           WHERE v.userId = :userId
             AND v.isDeleted = false
-            AND v.status <> com.company.video_service.entity.VideoStatus.DELETED
+            AND (v.status IS NULL OR v.status <> com.company.video_service.entity.VideoStatus.DELETED)
       """)
   Object getUserStorage(@Param("userId") Long userId);
 

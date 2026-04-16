@@ -21,4 +21,6 @@ public interface VideoUploadService { // Interface defining video upload operati
 
     // Method to finalize the upload process after all chunks are received
     VideoFinalizeJobResponse finalizeUpload(Long userId, String uploadUid);
+
+    java.util.List<com.company.video_service.dto.VideoBulkUploadResponseItem> bulkUpload(Long userId, org.springframework.web.multipart.MultipartFile[] files);
 }

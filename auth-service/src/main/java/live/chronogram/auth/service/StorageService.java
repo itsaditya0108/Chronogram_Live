@@ -92,8 +92,9 @@ public class StorageService {
 
         try {
             // Fetch from Image Service
+            String imgUrl = imageServiceUrl.replaceAll("/+$", "") + "/internal/storage/user/" + userId;
             live.chronogram.auth.dto.ExtUserStorageResponse imageStorage = restTemplate.getForObject(
-                    imageServiceUrl + "/internal/storage/user/" + userId,
+                    imgUrl,
                     live.chronogram.auth.dto.ExtUserStorageResponse.class);
 
             if (imageStorage != null) {
@@ -106,8 +107,9 @@ public class StorageService {
 
         try {
             // Fetch from Video Service
+            String vidUrl = videoServiceUrl.replaceAll("/+$", "") + "/internal/storage/user/" + userId;
             live.chronogram.auth.dto.ExtUserStorageResponse videoStorage = restTemplate.getForObject(
-                    videoServiceUrl + "/internal/storage/user/" + userId,
+                    vidUrl,
                     live.chronogram.auth.dto.ExtUserStorageResponse.class);
 
             if (videoStorage != null) {

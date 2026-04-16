@@ -28,7 +28,6 @@ public class OtpService {
     // Lock map to prevent concurrent OTP requests for the same target
     private static final java.util.Map<String, Object> LOCKS = new java.util.concurrent.ConcurrentHashMap<>();
 
-
     @Autowired
     private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
 
@@ -43,257 +42,210 @@ public class OtpService {
     public void fixColumnLength() {
         try {
             logger.info("Executing DDL to increase otp_code column length to 255...");
-            // Modification for forward compatibility (e.g., moving to SHA-256 in the
-            // future)
             jdbcTemplate.execute("ALTER TABLE otp_verification MODIFY otp_code VARCHAR(255) NOT NULL;");
             logger.info("otp_code column length successfully increased.");
         } catch (Exception e) {
-            logger.warn(
-                    "Could not alter otp_verification table length: {}",
-                    e.getMessage());
+            logger.warn("Could not alter otp_verification table length: {}", e.getMessage());
         }
     }
 
     @Value("${app.otp.validity-minutes}")
-    private int otpValidityMinutes; // Usually 5 minutes
+    private int otpValidityMinutes;
 
     @Value("${app.otp.max-attempts}")
-    private int maxAttempts; // Max invalid entries before lockout (e.g., 5)
+    private int maxAttempts;
 
     @Value("${app.otp.lock-duration-minutes}")
-    private int lockDurationMinutes; // Duration of temporary lockout (e.g., 15)
+    private int lockDurationMinutes;
 
-    /**
-     * Generates a secure 6-digit OTP for a specific target (mobile/email).
-     * Prevents rapid re-generation (spam protection) and handles lockout logic.
-     * 
-     * @param target  The destination identifier (phone or email).
-     * @param otpType The context (e.g., REGISTRATION, LOGIN).
-     * @return The 6-digit OTP string and sessionId.
-     */
-    /**
-     * Entry point for OTP generation. Handles JVM-level synchronization to prevent
-     * concurrent requests for the same target from exhausting connections.
-     */
     @Transactional(noRollbackFor = live.chronogram.auth.exception.AuthException.class)
     public String[] generateOtp(String target, OtpType otpType) {
-        return generateOtp(target, otpType, false);
+        return generateOtp(target, otpType, false, false);
     }
 
-    /**
-     * Entry point for OTP generation. Handles JVM-level synchronization to prevent
-     * concurrent requests for the same target from exhausting connections.
-     */
     @Transactional(noRollbackFor = live.chronogram.auth.exception.AuthException.class)
     public String[] generateOtp(String target, OtpType otpType, boolean isResend) {
-        // 1. JVM Lock: Prevent concurrent requests for the same target
+        return generateOtp(target, otpType, isResend, false);
+    }
+
+    @Transactional(noRollbackFor = live.chronogram.auth.exception.AuthException.class)
+    public String[] generateOtp(String target, OtpType otpType, boolean isResend, boolean skipGeneration) {
         Object lock = LOCKS.computeIfAbsent(target, k -> new Object());
         synchronized (lock) {
             try {
-                // 1. Fetch the most recent OTP record
                 Optional<OtpVerification> existingOpt = otpVerificationRepository
-                        .findTopByTargetAndOtpTypeOrderByCreatedTimestampDesc(target, otpType);
+                        .findTopByTargetOrderByCreatedTimestampDesc(target);
+
+                Optional<OtpVerification> globalLock = otpVerificationRepository
+                        .findTopByTargetAndLockedUntilAfterOrderByLockedUntilDesc(target, LocalDateTime.now());
+
+                if (globalLock.isPresent()) {
+                    long minutesLeft = java.time.Duration.between(LocalDateTime.now(), globalLock.get().getLockedUntil()).toMinutes();
+                    if (minutesLeft == 0) minutesLeft = 1;
+                    throw new live.chronogram.auth.exception.AuthException(
+                            org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
+                            "Too many requests. For your security, this phone number or email is temporarily locked for " + minutesLeft + " minutes.");
+                }
 
                 int currentSendCount = 0;
                 int currentAttempts = 0;
                 String sessionId = java.util.UUID.randomUUID().toString();
+                OtpVerification otpVerification;
 
                 if (existingOpt.isPresent()) {
-                    OtpVerification existing = existingOpt.get();
+                    otpVerification = existingOpt.get();
 
-                    // 2. Security Check: Strict 15-minute lockout enforcement
-                    if (existing.getLockedUntil() != null && existing.getLockedUntil().isAfter(LocalDateTime.now())) {
-                        long minutesLeft = java.time.Duration.between(LocalDateTime.now(), existing.getLockedUntil())
-                                .toMinutes();
-                        if (minutesLeft == 0)
-                            minutesLeft = 1;
-                        throw new live.chronogram.auth.exception.AuthException(
-                                org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
-                                "Too many OTP requests. Please try again after " + minutesLeft + " minute(s).");
-                    }
-
-                    // 3. Persistence: Inherit counts if within the session window (30m)
-                    if (Boolean.TRUE.equals(existing.getVerified())
-                            || existing.getCreatedTimestamp().plusMinutes(30).isBefore(LocalDateTime.now())
-                            || (existing.getLockedUntil() != null
-                                    && existing.getLockedUntil().isBefore(LocalDateTime.now()))) {
+                    if (otpVerification.getCreatedTimestamp().plusMinutes(30).isBefore(LocalDateTime.now(java.time.ZoneOffset.UTC))) {
+                        logger.info("Existing record for {} is older than 30 minutes. Resetting counters for a fresh session.", target);
                         currentSendCount = 0;
                         currentAttempts = 0;
+                        otpVerification.setLockedUntil(null); // Clear any old locks
+                        otpVerification.setVerified(false);
                     } else {
-                        currentSendCount = existing.getResendCount() != null ? existing.getResendCount() : 0;
-                        currentAttempts = existing.getAttempts() != null ? existing.getAttempts() : 0;
+                        currentSendCount = otpVerification.getResendCount() != null ? otpVerification.getResendCount() : 0;
+                        currentAttempts = otpVerification.getAttempts() != null ? otpVerification.getAttempts() : 0;
+                        logger.info("Found existing OTP session for {}. Current sends: {}, current invalid attempts: {}", 
+                            target, currentSendCount, currentAttempts);
                     }
 
-                    // 4. Total Send Limit (Max 5 per 15-minute window)
-                    // We check FIRST before allowing even a reuse
-                    if (currentSendCount >= 5) {
-                        existing.setLockedUntil(LocalDateTime.now().plusMinutes(lockDurationMinutes));
-                        otpVerificationRepository.save(existing);
-                        throw new live.chronogram.auth.exception.AuthException(
-                                org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
-                                "Maximum OTP generation limit reached. Blocked for " + lockDurationMinutes
-                                        + " minutes.");
-                    }
-
-                    // 5. Spam Protection & Reuse logic
-                    boolean isRecentlySent = existing.getExpiresAt().isAfter(LocalDateTime.now())
-                            && (existing.getVerified() == null || !existing.getVerified());
-
-                    // If user clicks "Resend" and an active OTP exists, we return it immediately
-                    // BUT we still increment the request count in the DB to track usage
-                    if (isResend && isRecentlySent) {
-                        existing.setResendCount(currentSendCount + 1);
-                        otpVerificationRepository.save(existing);
-
-                        // 🔥 BUG FIX: Actually SEND the email even on resend!
-                        if (target != null && target.contains("@")) {
-                            emailService.sendOtpEmail(target, existing.getOtpCode());
+                    if (currentSendCount >= 3) {
+                        logger.warn("Target {} reached max sends ({}). Blocking for 120 minutes.", target, currentSendCount);
+                        if (otpVerification.getLockedUntil() == null || otpVerification.getLockedUntil().isBefore(LocalDateTime.now(java.time.ZoneOffset.UTC))) {
+                            otpVerification.setLockedUntil(LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(120));
+                            otpVerificationRepository.save(otpVerification);
                         }
-
-                        return new String[] { existing.getOtpCode(), existing.getSessionId() };
-                    }
-
-                    // If user clicks "Send" (fresh) but one already exists, make them wait (Spam
-                    // Protection)
-                    if (!isResend && isRecentlySent) {
-                        long secondsLeft = java.time.Duration.between(LocalDateTime.now(), existing.getExpiresAt())
-                                .getSeconds();
                         throw new live.chronogram.auth.exception.AuthException(
                                 org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
-                                "Please wait " + secondsLeft + " seconds before requesting a new OTP.");
+                                "You have reached the maximum number of OTP requests. Please try again after 2 hours for security.");
                     }
+
+                    // We now ALWAYS increment currentSendCount regardless of expiry if we are in this block
+                    currentSendCount++;
+                    otpVerification.setResendCount(currentSendCount);
+
+                    int dynamicValidityMinutes = 2; 
+                    if (currentSendCount == 2) dynamicValidityMinutes = 3;
+                    else if (currentSendCount == 3) dynamicValidityMinutes = 5;
+                    
+                    logger.info("{} requested for {} (Attempt {}). New validity: {} minutes.", 
+                        isResend ? "Resending OTP" : "Refreshing OTP", target, currentSendCount, dynamicValidityMinutes);
+
+                    String otp = skipGeneration ? "EXTERNAL_FIREBASE" : String.format("%06d", secureRandom.nextInt(1_000_000));
+                    otpVerification.setOtpCode(otp);
+                    otpVerification.setExpiresAt(LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(dynamicValidityMinutes));
+                    otpVerificationRepository.save(otpVerification);
+
+                    if (target != null && target.contains("@") && !skipGeneration) {
+                        emailService.sendOtpEmail(target, otpVerification.getOtpCode(), dynamicValidityMinutes);
+                    }
+
+                    int attemptsRemaining = Math.max(0, 3 - currentSendCount);
+                    return new String[] { otpVerification.getOtpCode(), otpVerification.getSessionId(), 
+                        String.valueOf(dynamicValidityMinutes), String.valueOf(attemptsRemaining) };
+                } else {
+                    logger.info("No record found for {}. Creating new OTP verification record.", target);
+                    otpVerification = new OtpVerification();
+                    otpVerification.setTarget(target);
+                    otpVerification.setOtpType(otpType);
+                    otpVerification.setVerified(false);
                 }
 
-                // 6. Finalization: Increment send count and generate new code
                 currentSendCount++;
+                int dynamicValidityMinutes = 2;
+                if (currentSendCount == 2) dynamicValidityMinutes = 3;
+                else if (currentSendCount == 3) dynamicValidityMinutes = 5;
 
-                otpVerificationRepository.deleteByTargetAndOtpType(target, otpType);
-                String otp = String.format("%06d", secureRandom.nextInt(1_000_000));
+                logger.info("Generating fresh OTP for {} (Attempt {}). Validity: {} minutes.", 
+                    target, currentSendCount, dynamicValidityMinutes);
 
-                OtpVerification otpVerification = new OtpVerification();
-                otpVerification.setTarget(target);
-                otpVerification.setOtpType(otpType);
+                String otp = skipGeneration ? "EXTERNAL_FIREBASE" : String.format("%06d", secureRandom.nextInt(1_000_000));
+
                 otpVerification.setOtpCode(otp);
-                otpVerification.setExpiresAt(LocalDateTime.now().plusMinutes(otpValidityMinutes));
+                otpVerification.setExpiresAt(LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(dynamicValidityMinutes));
                 otpVerification.setAttempts(currentAttempts);
                 otpVerification.setResendCount(currentSendCount);
-                otpVerification.setSessionId(sessionId);
+                if (otpVerification.getSessionId() == null) otpVerification.setSessionId(sessionId);
                 otpVerification.setVerified(false);
 
                 otpVerificationRepository.save(otpVerification);
-
-                if (target != null && target.contains("@")) {
-                    emailService.sendOtpEmail(target, otp);
+                
+                if (target != null && target.contains("@") && !skipGeneration) {
+                    emailService.sendOtpEmail(target, otp, dynamicValidityMinutes);
                 }
-                return new String[] { otp, sessionId };
+
+                int attemptsRemaining = Math.max(0, 3 - currentSendCount);
+                return new String[] { otp, otpVerification.getSessionId(), String.valueOf(dynamicValidityMinutes), String.valueOf(attemptsRemaining) };
             } catch (live.chronogram.auth.exception.AuthException e) {
                 throw e;
             }
         }
     }
 
-
-    /**
-     * Entry point for OTP verification.
-     */
-    /**
-     * Entry point for OTP verification.
-     */
     @Transactional(noRollbackFor = live.chronogram.auth.exception.AuthException.class)
     public boolean verifyOtp(String target, OtpType otpType, String otpCode) {
         Object lock = LOCKS.computeIfAbsent(target, k -> new Object());
         synchronized (lock) {
-            // 1. Syntax Validation: OTP must be exactly 6 digits
-            if (otpCode == null || !otpCode.trim().matches("^\\d{6}$")) {
-                throw new live.chronogram.auth.exception.AuthException(
-                        org.springframework.http.HttpStatus.BAD_REQUEST,
-                        "Invalid OTP format. It must be a 6-digit number.");
-            }
-
-            logger.info("Verifying OTP for Target: [{}] and Type: [{}]", target, otpType);
-            // 2. Fetch the latest record
+            logger.info("OTP Verification started for target: [{}], type: [{}]", target, otpType);
             Optional<OtpVerification> otpOpt = otpVerificationRepository
                     .findTopByTargetAndOtpTypeOrderByCreatedTimestampDesc(target, otpType);
 
             if (otpOpt.isEmpty()) {
+                logger.warn("Verification failed: No OTP record found for {}", target);
                 return false;
             }
 
             OtpVerification otpVerification = otpOpt.get();
 
-            // 3. Security: Check for temporary lockout
-            if (otpVerification.getLockedUntil() != null) {
-                if (otpVerification.getLockedUntil().isAfter(LocalDateTime.now())) {
-                    throw new live.chronogram.auth.exception.AuthException(
-                            org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
-                            "Too many invalid OTP attempts. Please try again later.");
-                } else {
-                    // Natural Expiry: If the lockout time has passed, reset the status within this
-                    // record
-                    otpVerification.setLockedUntil(null);
-                    otpVerification.setAttempts(0);
-                    otpVerificationRepository.save(otpVerification);
-                }
+            if (otpVerification.getLockedUntil() != null && otpVerification.getLockedUntil().isAfter(LocalDateTime.now(java.time.ZoneOffset.UTC))) {
+                long minutesLeft = java.time.Duration.between(LocalDateTime.now(java.time.ZoneOffset.UTC), otpVerification.getLockedUntil()).toMinutes();
+                if (minutesLeft == 0) minutesLeft = 1;
+                logger.warn("Verification blocked: Target {} is currently locked for {} more minutes.", target, minutesLeft);
+                throw new live.chronogram.auth.exception.AuthException(
+                        org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
+                        "Too many unsuccessful verification attempts. This phone number or email is temporarily locked for " + minutesLeft + " minutes.");
             }
 
-            // 4. Integrity Check: Max failed attempts enforcement
-            if (otpVerification.getAttempts() >= maxAttempts) {
-                if (otpVerification.getLockedUntil() == null) {
-                    // Removed: otpVerification.setAttempts(0); 
-                    // We should not reset attempts here if they have reached maxAttempts without a lock
-                    throw new live.chronogram.auth.exception.AuthException(
-                            org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
-                            "Too many invalid OTP attempts. Please try again later.");
-                } else {
-                    throw new live.chronogram.auth.exception.AuthException(
-                            org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
-                            "Too many invalid OTP attempts. Please try again later.");
-                }
-            }
-
-            // 5. Validity Checks: Expiry and prior verification
-            if (otpVerification.getExpiresAt().isBefore(LocalDateTime.now())) {
+            if (otpVerification.getExpiresAt().isBefore(LocalDateTime.now(java.time.ZoneOffset.UTC))) {
+                logger.warn("Verification failed: OTP for {} has expired.", target);
                 throw new live.chronogram.auth.exception.AuthException(
                         org.springframework.http.HttpStatus.BAD_REQUEST,
-                        "OTP expired.");
+                        "The verification code has expired. Please request a new one.");
             }
 
             if (Boolean.TRUE.equals(otpVerification.getVerified())) {
+                logger.warn("Verification failed: OTP for {} was already used.", target);
                 throw new live.chronogram.auth.exception.AuthException(
                         org.springframework.http.HttpStatus.BAD_REQUEST,
                         "OTP already verified.");
             }
 
-            // 6. Visual Code Comparison
             if (otpCode.equals(otpVerification.getOtpCode())) {
-                // Success: Mark as verified and immediately expire to prevent reuse
+                logger.info("Verification SUCCESS for target: {}", target);
                 otpVerification.setVerified(true);
-                otpVerification.setExpiresAt(LocalDateTime.now());
+                otpVerification.setExpiresAt(LocalDateTime.now(java.time.ZoneOffset.UTC));
                 otpVerificationRepository.save(otpVerification);
                 return true;
             } else {
-                // 7. Failure: Track failed attempts and trigger lockout if limit reached
                 int newAttemptCount = otpVerification.getAttempts() + 1;
                 otpVerification.setAttempts(newAttemptCount);
+                int attemptsLeft = Math.max(0, 3 - newAttemptCount);
+                logger.warn("Verification FAILED for {}. Invalid attempts: {}/{}. Remaining: {}", 
+                    target, newAttemptCount, 3, attemptsLeft);
 
-                if (newAttemptCount >= maxAttempts) {
-                    // Trigger Lockout
-                    otpVerification.setLockedUntil(LocalDateTime.now().plusMinutes(lockDurationMinutes));
+                if (newAttemptCount >= 3) {
+                    logger.error("Target {} reached max invalid attempts. Locking target.", target);
+                    otpVerification.setLockedUntil(LocalDateTime.now(java.time.ZoneOffset.UTC).plusMinutes(120));
                     otpVerificationRepository.save(otpVerification);
                     throw new live.chronogram.auth.exception.AuthException(
                             org.springframework.http.HttpStatus.TOO_MANY_REQUESTS,
-                            "Maximum OTP attempts reached (" + maxAttempts + "). Please try again after "
-                                    + lockDurationMinutes + " minutes.");
+                            "Maximum verification attempts reached. Please try again after 2 hours for security.");
                 }
 
                 otpVerificationRepository.save(otpVerification);
-
-                int attemptsLeft = maxAttempts - newAttemptCount;
                 throw new live.chronogram.auth.exception.AuthException(
                         org.springframework.http.HttpStatus.BAD_REQUEST,
-                        "Invalid OTP. " + attemptsLeft + " attempt" + (attemptsLeft == 1 ? "" : "s") + " remaining.");
+                        "Incorrect OTP. " + attemptsLeft + " attempts remaining.");
             }
         }
     }
-
 }

@@ -17,7 +17,6 @@ public class AdminController {
     @Autowired
     private AdminService adminService;
 
-
     @GetMapping("/users")
     public ResponseEntity<List<User>> getAllUsers() {
         return ResponseEntity.ok(adminService.getAllUsers());
@@ -84,7 +83,7 @@ public class AdminController {
         long totalPhotos = usages.stream().mapToLong(StorageUsage::getPhotoBytes).sum();
         long totalVideos = usages.stream().mapToLong(StorageUsage::getVideoBytes).sum();
         long totalBytes = usages.stream().mapToLong(StorageUsage::getTotalBytes).sum();
-        
+
         java.util.Map<String, Long> stats = new java.util.HashMap<>();
         stats.put("totalPhotos", totalPhotos);
         stats.put("totalVideos", totalVideos);

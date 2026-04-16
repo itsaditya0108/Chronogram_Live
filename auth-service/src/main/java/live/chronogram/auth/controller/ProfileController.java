@@ -45,5 +45,13 @@ public class ProfileController {
         return ResponseEntity.ok(profileService.updateProfile(userId, request));
     }
 
+    /**
+     * API Endpoint: GET /api/profile/public-key/{userId}
+     * Fetches the public key of a specific user.
+     */
+    @GetMapping("/public-key/{userId}")
+    public ResponseEntity<String> getPublicKey(@PathVariable Long userId) {
+        return ResponseEntity.ok(profileService.getPublicKey(userId));
+    }
 
 }

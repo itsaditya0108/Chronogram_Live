@@ -59,19 +59,18 @@ public class FileStorageUtil {
                                         basePath,
                                         "shared_images",
                                         String.valueOf(now.getYear()),
-                                        String.valueOf(now.getMonthValue()));
+                                        String.format("%02d", now.getMonthValue()));
                 } else {
                         baseDir = Paths.get(
                                         basePath,
                                         "users",
                                         userId.toString(),
-                                        "images",
                                         String.valueOf(now.getYear()),
                                         String.format("%02d", now.getMonthValue()));
                 }
 
-                Path originalDir = baseDir.resolve("original");
-                Path thumbDir = baseDir.resolve("thumb");
+                Path originalDir = baseDir.resolve("images");
+                Path thumbDir = baseDir.resolve("thumbnail");
 
                 Files.createDirectories(originalDir);
                 Files.createDirectories(thumbDir);
@@ -151,12 +150,21 @@ public class FileStorageUtil {
                 // -------------------------
                 String relativeOriginalPath = toRelativePath(basePath, originalPath);
 
+                long totalSize = Files.size(originalPath);
+                if (relativeThumbPath != null) {
+                    Path thumbPath = thumbDir.resolve(thumbFilename);
+                    if (Files.exists(thumbPath)) {
+                        totalSize += Files.size(thumbPath);
+                    }
+                }
+
                 return new StoredImageResult(
                                 filename,
                                 relativeOriginalPath,
                                 relativeThumbPath,
                                 width,
-                                height);
+                                height,
+                                totalSize);
         }
 
         private static String toRelativePath(String basePath, Path fullPath) {

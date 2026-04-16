@@ -61,9 +61,35 @@ public class AuthController {
         String[] result = authService.sendOtp(request, false);
         logger.info("Registration OTP sent to mobile: {}", request.getMobileNumber());
 
-        return ResponseEntity.ok(java.util.Map.of(
-                "message", "OTP sent successfully.",
-                "otpSessionToken", result[1])); // Bound to this specific device/session
+        return sendOtpResponse("OTP sent successfully.", result);
+    }
+
+    /**
+     * Helper to build a consistent OTP response for the Flutter app.
+     * Ensures expiresInMinutes and attemptsRemaining are ALWAYS present.
+     * Hardcoded to use 'otpSessionToken' for APK compatibility.
+     */
+    private ResponseEntity<?> sendOtpResponse(String message, String[] result) {
+        java.util.Map<String, Object> responseBody = new java.util.HashMap<>();
+        responseBody.put("success", true);
+        responseBody.put("message", message);
+        
+        // result[1] is always the token (accessToken, temporaryToken, or otpSessionToken)
+        if (result.length > 1 && result[1] != null) {
+            responseBody.put("otpSessionToken", result[1]);
+        }
+
+        // result[2] is validity in minutes, result[3] is attempts remaining
+        if (result.length > 3) {
+            responseBody.put("expiresInMinutes", Integer.parseInt(result[2]));
+            responseBody.put("attemptsRemaining", Integer.parseInt(result[3]));
+        } else {
+            // Safety defaults if something goes wrong, but service now always sends 4
+            responseBody.put("expiresInMinutes", 2);
+            responseBody.put("attemptsRemaining", 2);
+        }
+
+        return ResponseEntity.ok(responseBody);
     }
 
 
@@ -109,9 +135,7 @@ public class AuthController {
         String[] result = authService.sendOtp(request, true);
         logger.info("Login OTP sent to mobile: {}", request.getMobileNumber());
 
-        return ResponseEntity.ok(java.util.Map.of(
-                "message", "OTP sent successfully.",
-                "otpSessionToken", result[1]));
+        return sendOtpResponse("OTP sent successfully.", result);
     }
 
     /**
@@ -123,41 +147,28 @@ public class AuthController {
      */
     @PostMapping("/send-email-otp")
     public ResponseEntity<?> sendEmailOtp(@RequestBody OtpRequest request) {
-        String testOtp = "";
+        String[] result;
         String accessToken = null;
 
-        // 1. Distinction: Is this a registration step or a direct email link request?
         if (request.getRegistrationToken() != null && !request.getRegistrationToken().isEmpty()) {
-            // Case A: REGISTRATION Flow. Email is provided with a valid mobile-verified token.
             if (request.getEmail() == null || request.getEmail().isEmpty()) {
                 throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
                         "Email is required for registration.");
             }
-            // Return BOTH the OTP (for testing) and a new token with email-ready state
-            String[] response = authService.sendEmailOtp(request.getEmail(),
-                    request.getRegistrationToken());
-            testOtp = response[0];
-            accessToken = response[1];
+            result = authService.sendEmailOtp(request.getEmail(), request.getRegistrationToken());
+            accessToken = result[1];
         } else {
-            // Case B: Direct OTP by mobile (e.g. recovery or legacy flows)
             if (request.getMobileNumber() == null || request.getMobileNumber().isEmpty()) {
                 throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
                         "Mobile number is required");
             }
-            testOtp = authService.sendEmailOtp(request.getMobileNumber());
+            result = authService.sendEmailOtp(request.getMobileNumber());
         }
 
         logger.info("Email OTP sent to: {}",
                 (request.getEmail() != null ? request.getEmail() : request.getMobileNumber()));
 
-        java.util.Map<String, String> responseBody = new java.util.HashMap<>();
-        responseBody.put("message", "Email OTP sent successfully.");
-        if (accessToken != null) {
-            // This token is needed for the 'verify-email-registration-otp' step
-            responseBody.put("accessToken", accessToken);
-        }
-
-        return ResponseEntity.ok(responseBody);
+        return sendOtpResponse("Email OTP sent successfully.", result);
     }
 
     /**
@@ -169,23 +180,16 @@ public class AuthController {
         // Condition: Resend can be for Email OR Mobile during registration steps
         if (request.getEmail() != null && !request.getEmail().trim().isEmpty()) {
             // 1. Resend Email OTP
-            String testOtp = "";
+            String[] result;
             String accessToken = null;
             if (request.getRegistrationToken() != null && !request.getRegistrationToken().isEmpty()) {
-                String[] response = authService.sendEmailOtp(request.getEmail(),
-                        request.getRegistrationToken());
-                testOtp = response[0];
-                accessToken = response[1];
+                result = authService.sendEmailOtp(request.getEmail(), request.getRegistrationToken());
+                accessToken = result[1];
             } else {
-                testOtp = authService.resendEmailOtpByEmail(request.getEmail());
+                result = authService.resendEmailOtpByEmail(request.getEmail());
             }
             logger.info("Email OTP resent to: {}", request.getEmail());
-            java.util.Map<String, String> responseBody = new java.util.HashMap<>();
-            responseBody.put("message", "Email OTP resent successfully.");
-            if (accessToken != null) {
-                responseBody.put("accessToken", accessToken);
-            }
-            return ResponseEntity.ok(responseBody);
+            return sendOtpResponse("Email OTP resent successfully.", result);
         } else if (request.getMobileNumber() != null && !request.getMobileNumber().trim().isEmpty()) {
             // 2. Resend Mobile OTP
             if (!request.getMobileNumber().trim().matches("^\\d{10}$")) {
@@ -196,11 +200,8 @@ public class AuthController {
                 throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
                         "Device ID is required");
             }
-            String[] result = authService.resendOtp(request.getMobileNumber(), false, request.getDeviceId());
-            logger.info("Registration Mobile OTP resent to: {}", request.getMobileNumber());
-            return ResponseEntity.ok(java.util.Map.of(
-                    "message", "Mobile OTP resent successfully.",
-                    "otpSessionToken", result[1]));
+            String[] result = authService.resendOtp(request.getMobileNumber(), false, request.getDeviceId(), Boolean.TRUE.equals(request.getSkipSms()));
+            return sendOtpResponse("Mobile OTP resent successfully.", result);
         } else {
             throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
                     "Either email or mobileNumber is required for resend-otp");
@@ -224,12 +225,10 @@ public class AuthController {
                         "Device ID is required");
             }
             // Logic: Issue fresh OTP while preserving sessionID if possible
-            String[] result = authService.resendOtp(request.getMobileNumber(), true, request.getDeviceId());
+            String[] result = authService.resendOtp(request.getMobileNumber(), true, request.getDeviceId(), Boolean.TRUE.equals(request.getSkipSms()));
             logger.info("Login Mobile OTP resent to: {}", request.getMobileNumber());
  
-            return ResponseEntity.ok(java.util.Map.of(
-                    "message", "Mobile OTP resent successfully.",
-                    "otpSessionToken", result[1]));
+            return sendOtpResponse("Mobile OTP resent successfully.", result);
         } else {
             throw new live.chronogram.auth.exception.AuthException(org.springframework.http.HttpStatus.BAD_REQUEST,
                     "mobileNumber is required for login resend-otp");
@@ -407,14 +406,10 @@ public class AuthController {
 
         // 2. Logic: Generates a fresh OTP and a new temporary session token
         String[] result = authService.resendNewDeviceOtp(request.getTemporaryToken());
-        String otp = result[0];
-        String newToken = result[1];
 
         logger.info("New Device OTP resent successfully using temporary token.");
 
-        return ResponseEntity.ok(java.util.Map.of(
-                "message", "New Device OTP resent successfully to registered email.",
-                "temporaryToken", newToken));
+        return sendOtpResponse("New Device OTP resent successfully to registered email.", result);
     }
 
     /**
@@ -428,16 +423,10 @@ public class AuthController {
     public ResponseEntity<?> linkEmail(@RequestBody live.chronogram.auth.dto.LinkEmailRequest request) {
         // 1. Logic: Security checks for email uniqueness and OTP dispatch
         String[] result = authService.linkEmail(request);
-        String otp = result[0];
-        String token = result[1];
 
         logger.info("Link Email OTP sent to: {}", request.getEmail());
 
-        java.util.Map<String, Object> responseBody = new java.util.HashMap<>();
-        responseBody.put("message", "OTP sent to email.");
-        responseBody.put("registrationToken", token);
-
-        return ResponseEntity.ok(responseBody);
+        return sendOtpResponse("OTP sent to email.", result);
     }
 
     /**

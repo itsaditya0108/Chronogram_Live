@@ -73,7 +73,7 @@ public class User {
      * Admin approval status.
      */
     @Column(name = "approval_status", length = 50)
-    private String approvalStatus = "PENDING";
+    private String approvalStatus = "APPROVED";
 
     /**
      * Flag indicating if the user is explicitly blocked by an admin.
@@ -149,6 +149,13 @@ public class User {
     @UpdateTimestamp
     @Column(name = "updated_timestamp")
     private LocalDateTime updatedTimestamp;
+
+    /**
+     * User's public key (Base64) for E2E encryption.
+     * Stored in auth-service for centralized access by other services (like chat).
+     */
+    @Column(name = "public_key", length = 2000)
+    private String publicKey;
 
 
     public User() {
@@ -354,5 +361,13 @@ public class User {
 
     public void setLastLoginAt(LocalDateTime lastLoginAt) {
         this.lastLoginAt = lastLoginAt;
+    }
+
+    public String getPublicKey() {
+        return publicKey;
+    }
+
+    public void setPublicKey(String publicKey) {
+        this.publicKey = publicKey;
     }
 }

@@ -73,6 +73,7 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<ErrorResponse> handleRuntimeException(RuntimeException ex) {
+        logger.error("[400] RuntimeException: {}", ex.getMessage());
         ErrorResponse error = new ErrorResponse(
                 HttpStatus.BAD_REQUEST.value(),
                 ex.getMessage(),
@@ -88,10 +89,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(live.chronogram.auth.exception.AuthException.class)
     public ResponseEntity<ErrorResponse> handleAuthException(live.chronogram.auth.exception.AuthException ex,
             WebRequest request) {
+        logger.warn("[{}] AuthException: {} | Detail: {}", ex.getStatus().value(), ex.getMessage(), request.getDescription(false));
         ErrorResponse errorDetails = new ErrorResponse(
                 ex.getStatus().value(),
+                ex.getStatus().getReasonPhrase(),
                 ex.getMessage(),
-                request.getDescription(false),
                 getTraceId());
         return new ResponseEntity<>(errorDetails, ex.getStatus());
     }

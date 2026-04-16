@@ -79,9 +79,9 @@ public class JwtTokenProvider {
                 .compact();
     }
 
-    // Strict Base64Url pattern for JWT parts (no padding =)
+    // Standard Base64Url pattern for JWT parts (allow optional padding '=' for robustness)
     private static final java.util.regex.Pattern JWT_STRICT_PATTERN = java.util.regex.Pattern.compile(
-            "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$");
+            "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_+/=-]+$");
 
     /**
      * Checks if a token follows the strict JWT format without padding.

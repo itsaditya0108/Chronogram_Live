@@ -1,17 +1,23 @@
-package com.company.video_service; // Package declaration for the video service
+package com.company.video_service;
 
-import org.springframework.boot.SpringApplication; // Import SpringApplication to run the app
-import org.springframework.boot.autoconfigure.SpringBootApplication; // Import auto-configuration annotation
-import org.springframework.scheduling.annotation.EnableScheduling; // Import scheduling support
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import jakarta.annotation.PostConstruct;
+import java.util.TimeZone;
 
-@EnableScheduling // Enables Spring's scheduled task execution (e.g., cron jobs)
-@SpringBootApplication // Marks this class as the main Spring Boot application and enables
-                       // auto-configuration
-public class VideoServiceApplication { // Main class definition
+@EnableScheduling
+@SpringBootApplication
+public class VideoServiceApplication {
 
-    // Main method: The entry point of the Java application
+    @PostConstruct
+    public void init() {
+        // Setting Spring Boot SetTimeZone to IST
+        TimeZone.setDefault(TimeZone.getTimeZone("Asia/Kolkata"));
+        System.out.println("VideoService Application started in Asia/Kolkata time zone: " + new java.util.Date());
+    }
+
     public static void main(String[] args) {
-        // Launches the Spring Boot application, setting up the container and context
         SpringApplication.run(VideoServiceApplication.class, args);
     }
 }

@@ -25,6 +25,9 @@ public class S3StorageService implements FileStorageService {
     @Value("${aws.s3.bucket}")
     private String bucket;
 
+    @Value("${aws.s3.base-path:users}")
+    private String basePath;
+
     public S3StorageService(S3Client s3Client) {
         this.s3Client = s3Client;
     }
@@ -37,7 +40,8 @@ public class S3StorageService implements FileStorageService {
             String filename = uuid + extension + ".enc";
             String thumbFilename = uuid + extension + ".enc.thumb";
 
-            String baseKey = "chat".equalsIgnoreCase(type) ? "shared_images" : "users/" + userId + "/images";
+            String subfolder = "chat".equalsIgnoreCase(type) ? "shared_images" : userId + "/images";
+            String baseKey = basePath + "/" + subfolder;
             java.time.LocalDate now = java.time.LocalDate.now();
             String datePath = now.getYear() + "/" + String.format("%02d", now.getMonthValue());
 
@@ -59,6 +63,7 @@ public class S3StorageService implements FileStorageService {
             int width = 0;
             int height = 0;
             String relativeThumbPath = null;
+            byte[] thumbData = null;
 
             if (source != null) {
                 width = source.getWidth();
@@ -87,7 +92,7 @@ public class S3StorageService implements FileStorageService {
                 java.io.ByteArrayOutputStream thumbEncBaos = new java.io.ByteArrayOutputStream();
                 encryptionService.encryptAndSave(new java.io.ByteArrayInputStream(thumbBaos.toByteArray()), thumbEncBaos);
                 
-                byte[] thumbData = thumbEncBaos.toByteArray();
+                thumbData = thumbEncBaos.toByteArray();
                 s3Client.putObject(
                         PutObjectRequest.builder().bucket(bucket).key(thumbKey).contentType("application/octet-stream").build(),
                         RequestBody.fromBytes(thumbData)
@@ -95,7 +100,8 @@ public class S3StorageService implements FileStorageService {
                 relativeThumbPath = thumbKey;
             }
 
-            return new StoredImageResult(filename, originalKey, relativeThumbPath, width, height);
+            long totalSize = originalData.length + (thumbData != null ? thumbData.length : 0);
+            return new StoredImageResult(filename, originalKey, relativeThumbPath, width, height, totalSize);
 
         } catch (Exception e) {
             throw new RuntimeException("S3 Storage failed", e);

@@ -9,8 +9,7 @@ import org.springframework.web.filter.OncePerRequestFilter; // Base class for fi
 
 import java.io.IOException; // IOException
 
-public class JwtAuthenticationFilter extends OncePerRequestFilter { // Custom JWT filter ensuring execution once per
-                                                                    // request
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtUtil jwtUtil; // Utility for JWT operations
     private final String authServiceUrl; // URL of the Auth Service for validation
@@ -20,6 +19,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter { // Custom JW
         this.jwtUtil = jwtUtil;
         this.authServiceUrl = authServiceUrl;
     }
+
+    private static final org.slf4j.Logger logger = org.slf4j.LoggerFactory.getLogger(JwtAuthenticationFilter.class);
 
     @Override
     protected void doFilterInternal(
@@ -43,14 +44,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter { // Custom JW
             authHeader = "Bearer " + request.getParameter("token");
         }
 
-        // Allow streams or logic to proceed without token if needed
-        // but generally we enforce JWT. If header is missing, we pass it down
-        // and let SecurityConfig deny access if endpoint requires it.
-
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            // No valid Bearer token found.
-            // Continue chain (anonymous request) - SecurityConfig will handle 403 if auth
-            // is required.
             filterChain.doFilter(request, response);
             return;
         }
@@ -64,7 +58,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter { // Custom JW
 
             // 4️⃣ Check Revocation (Verify with Auth Service if session is still valid)
             if (!isSessionValid(token)) {
-                System.out.println("DEBUG: Session validation failed for token: " + token.substring(0, 10) + "...");
+                logger.warn("[SECURITY] Session validation failed for token prefix: {}...", token.substring(0, Math.min(token.length(), 10)));
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED); // 401 Unauthorized
                 return;
             }
@@ -72,7 +66,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter { // Custom JW
             // 5️⃣ Extract userId from standard JWT "sub" (subject) claim
             String subject = claims.getSubject(); // sub
             if (subject == null) {
-                System.out.println("DEBUG: JWT subject is null");
+                logger.error("[SECURITY] JWT subject is missing");
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 return;
             }
@@ -81,7 +75,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter { // Custom JW
             try {
                 userId = Long.parseLong(subject); // Parse subject as Long ID
             } catch (NumberFormatException e) {
-                System.out.println("DEBUG: JWT subject is not a valid Long: " + subject);
+                logger.error("[SECURITY] JWT subject is not a valid Long: {}", subject);
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 return;
             }
@@ -91,18 +85,15 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter { // Custom JW
 
             // 6.5️⃣ Populate Spring Security Context (CRITICAL for Prod Profile and
             // @PreAuthorize)
-            // Create an Authentication object with the userId and empty authorities
             org.springframework.security.authentication.UsernamePasswordAuthenticationToken auth = new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
                     userId, null, java.util.Collections.emptyList());
-            // Set the authentication in the SecurityContext
             org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(auth);
 
             // 7️⃣ Continue request processing
             filterChain.doFilter(request, response);
 
         } catch (Exception ex) {
-            // Catch any JWT validation failures (Expired, Malformed, Signature, etc.)
-            System.out.println("DEBUG: JWT Validation Exception: " + ex.getMessage());
+            logger.error("[SECURITY-ERROR] JWT Validation Failure: {}", ex.getMessage());
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED); // 401 Unauthorized
         }
     }
@@ -122,7 +113,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter { // Custom JW
         }
 
         try {
-            // Call Auth Service API
+            logger.info("[HANDSHAKE] Requesting session validation from Auth Service...");
             java.net.URL url = new java.net.URL(authServiceUrl + "/api/auth/validate-session");
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
@@ -132,14 +123,14 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter { // Custom JW
 
             int code = conn.getResponseCode();
             if (code == 200) { // 200 OK means session is valid
+                logger.info("[HANDSHAKE] Session validated successfully.");
                 VALID_SESSION_CACHE.put(token, now); // Update cache
                 return true;
             }
+            logger.warn("[HANDSHAKE] Session validation rejected. Auth code: {}", code);
             return false; // Any other code means invalid
         } catch (Exception e) {
-            // If authapp is down or unreachable
-            // Fail-safe approach: return false to be secure (deny access)
-            System.err.println("Session validation failed (Auth service unreachable): " + e.getMessage());
+            logger.error("[HANDSHAKE-ERROR] Auth Service unreachable: {}", e.getMessage());
             return false;
         }
     }
